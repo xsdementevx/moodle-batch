@@ -278,7 +278,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
-      return { ...result, reasoning: effort, sourcePolicy: 7 };
+      return { ...result, reasoning: effort, sourcePolicy: 8 };
     } catch (error) {
       await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url() }), { mode: 0o600 });
       if (/^[A-Z_]+$/u.test(error.message || '')) throw error;
@@ -313,13 +313,13 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
         const recheck = answer => answer.status === 'needs_review' && answer.answer !== null
           && ['source_quote_not_found', 'source_unavailable', 'context_quote_not_found', 'evidence_incomplete'].includes(answer.reviewReason)
           && (Array.isArray(answer.evidence) ? answer.evidence : [answer.evidence]).some(item => ['web', 'context'].includes(item?.kind));
-        if (cached.result.sourcePolicy !== 7 && cached.result.answers.some(recheck)) {
+        if (cached.result.sourcePolicy !== 8 && cached.result.answers.some(recheck)) {
           const parser = await openParser();
           try {
             const checked = await verifyEvidence(cached.result.answers.filter(recheck).map(answer => ({ ...answer, status: 'candidate' })),
               questions, context, { textFromHtml: html => parser.sourceText(html) });
             cached.result.answers = cached.result.answers.map(answer => checked.find(a => a.slot === answer.slot) || answer);
-            cached.result.sourcePolicy = 7;
+            cached.result.sourcePolicy = 8;
             await writeFile(`${options.journalPath}.tmp`, JSON.stringify(cached), { mode: 0o600 });
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }

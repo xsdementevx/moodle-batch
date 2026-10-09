@@ -184,7 +184,7 @@ test('completed evidence arrays are rechecked after a reader upgrade but model u
     assert.equal(result[0].reviewReason, undefined);
     assert.equal(result[1].status, 'needs_review');
     assert.equal(result[1].reviewReason, 'model_uncertain');
-    assert.equal(JSON.parse(await readFile(journalPath, 'utf8')).result.sourcePolicy, 7);
+    assert.equal(JSON.parse(await readFile(journalPath, 'utf8')).result.sourcePolicy, 8);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

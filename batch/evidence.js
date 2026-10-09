@@ -53,7 +53,7 @@ export async function readPublicSource(href) {
     if (pdf) {
       if (buffer.subarray(0, 5).toString() !== '%PDF-') throw new Error('SOURCE_UNAVAILABLE');
       const material = await extractMaterial({ buffer, mime: 'application/pdf' }, join(tmpdir(), 'moodle-batch-public-pdf'));
-      return { text: material.text, format: 'pdf' };
+      return { text: material.text, lineText: material.lineText, format: 'pdf' };
     }
     const html = buffer.toString('utf8');
     if (/<title[^>]*>\s*(?:check failed|just a moment|verify you are human)/iu.test(html)) throw new Error('SOURCE_UNAVAILABLE');
@@ -95,6 +95,7 @@ export async function verifyEvidence(decisions, questions, context, { readSource
   renderSource = readRenderedSource, textFromHtml } = {}) {
   const pages = new Map();
   const pdfs = new Set();
+  const pdfLines = new Map();
   const unavailable = new Set();
   const results = [];
   async function verifyOne(evidence, decision, question) {
@@ -108,12 +109,18 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         if (!pages.has(evidence.url)) pages.set(evidence.url, (async () => {
           try {
             const raw = await readSource(evidence.url);
-            if (raw?.format === 'pdf') { pdfs.add(evidence.url); return evidenceText(raw.text); }
+            if (raw?.format === 'pdf') { pdfs.add(evidence.url); if (raw.lineText) pdfLines.set(evidence.url, raw.lineText); return evidenceText(raw.text); }
             return evidenceText(textFromHtml ? await textFromHtml(raw) : raw);
           } catch { unavailable.add(evidence.url); return ''; }
         })());
         const needle = evidenceText(evidence.quote);
         grounded = (await pages.get(evidence.url)).includes(needle);
+        if (!grounded && pdfLines.has(evidence.url)) {
+          // Only physical PDF line endings can join words; keep a compound's hyphen when the quote includes it.
+          const joined = pdfLines.get(evidence.url).replace(/(\p{L}+)-[ \t]*\r?\n[ \t]*(\p{L}+)/gu,
+            (whole, first, last) => needle.includes(first + last) ? first + last : first + '-' + last);
+          grounded = evidenceText(joined).includes(needle);
+        }
         if (!grounded && renderSource && !pdfs.has(evidence.url)) {
           const renderKey = `render:${evidence.url}:${needle}`;
           if (!pages.has(renderKey)) pages.set(renderKey, (async () => {

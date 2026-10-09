@@ -15,9 +15,9 @@ export async function extractMaterial(material, cacheDir) {
   const cacheFile = join(cacheDir, `${contentHash}.json`);
   try {
     const cached = JSON.parse(await readFile(cacheFile, 'utf8'));
-    if (cached.extractorVersion === 1 && cached.contentHash === contentHash && typeof cached.text === 'string') return { ...material, buffer: undefined, ...cached, cacheHit: true };
+    if (cached.extractorVersion === 2 && cached.contentHash === contentHash && typeof cached.text === 'string') return { ...material, buffer: undefined, ...cached, cacheHit: true };
   } catch { /* missing or invalid cache is rebuilt from the source bytes */ }
-  let text;
+  let text, lineText;
   if (material.buffer.subarray(0, 5).toString() === '%PDF-') {
     const modulePath = process.env.PDFJS_PATH || join(process.env.USERPROFILE || '', '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/pdfjs-dist/legacy/build/pdf.mjs');
     let pdfjs;
@@ -30,10 +30,10 @@ export async function extractMaterial(material, cacheDir) {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        pages.push(content.items.map(item => item.str || '').join(' '));
+        pages.push(content.items.map(item => (item.str || '') + (item.hasEOL ? '\n' : ' ')).join(''));
         page.cleanup();
       }
-      text = pages.join('\n');
+      text = lineText = pages.join('\n');
     } finally { await task.destroy(); }
   } else if (material.mime.includes('msword') || material.mime.includes('wordprocessingml')
       || material.buffer.subarray(0, 8).toString('hex') === 'd0cf11e0a1b11ae1') {
@@ -49,7 +49,7 @@ export async function extractMaterial(material, cacheDir) {
   text = normalize(text);
   if (text.length > 500000) throw new Error('MATERIAL_TEXT_LIMIT');
   if (text.length < 100) throw new Error('MATERIAL_UNREADABLE');
-  const cached = { extractorVersion: 1, contentHash, text };
+  const cached = { extractorVersion: 2, contentHash, text, ...(lineText ? { lineText } : {}) };
   await writeFile(cacheFile, JSON.stringify(cached), { mode: 0o600 });
   return { ...material, buffer: undefined, ...cached, cacheHit: false };
 }

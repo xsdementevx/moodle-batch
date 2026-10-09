@@ -50,6 +50,20 @@ test('public PDF evidence is checked as extracted text without HTML or browser r
   assert.equal((await verifyEvidence([invented], [{ slot: '1' }], {}, options))[0].status, 'needs_review');
 });
 
+test('physical PDF word wraps match exact quotes while compounds and numeric ranges stay intact', async () => {
+  const lineText = 'Гражданско-\nправовые нарушения, обладаю-\nщие признаками коррупции, влекут ответственность. Значение равно 12-\n34.';
+  const quote = 'Гражданско-правовые нарушения, обладающие признаками коррупции, влекут ответственность.';
+  const url = 'https://source.example/law.pdf';
+  const decision = { slot: '1', status: 'candidate', sourceUrls: [url], evidence: { kind: 'web', url, quote } };
+  const verify = (text, evidenceQuote = quote) => verifyEvidence([{ ...decision, evidence: { ...decision.evidence, quote: evidenceQuote } }],
+    [{ slot: '1' }], {}, { readSource: async () => ({ format: 'pdf', text: text.replace(/\n/gu, ' '), lineText: text }),
+      renderSource: () => assert.fail('PDF must not render in a browser') }).then(r => r[0]);
+  assert.equal((await verify(lineText)).status, 'candidate');
+  assert.equal((await verify(lineText.replace('обладаю-\nщие', 'обладаю- щие'))).status, 'needs_review', 'ordinary spaces are not physical word wraps');
+  assert.equal((await verify(lineText, quote.replace('коррупции', 'некоррупции'))).status, 'needs_review');
+  assert.equal((await verify(lineText, 'Значение равно 1234.')).status, 'needs_review', 'different numbers must not merge');
+});
+
 test('multiple source quotes must all be observed, exact and cover every matching row or selected option', async () => {
   const first = 'The first event happened on the verified earlier date.';
   const second = 'The second event happened on the verified later date.';
