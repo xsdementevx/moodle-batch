@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { optionId, digest, questionKey } from '../../batch/answers.js';
 import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
-import { checkpointed, jevPacket, parseJev, questionPackets, solveTest } from '../../batch/solve.js';
+import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, solveTest } from '../../batch/solve.js';
 import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, webSolver } from '../../batch/web.js';
 import { closeExtensionTabs } from '../../batch/extension.js';
 import { chromium } from 'playwright';
@@ -230,6 +230,25 @@ test('shared packets preserve test context, avoid slot collisions, and escalate 
     const pending = join(dir, `${'a'.repeat(64)}.json`);
     await writeFile(pending, JSON.stringify({ state: 'pending', questionIds: ['21:31:1'] }));
     await assert.rejects(solveTest(questions.slice(1), contexts, { journalDir: dir, web: () => assert.fail('regrouped pending request') }), /UNKNOWN_MODEL_OUTCOME/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('verified cached answers survive regrouping but changed wording, context or exclusions requires a new decision', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-regroup-'));
+  const question = q('20:30:1');
+  const context = { status: 'missing', text: '', contextHash: null };
+  try {
+    await writeFile(join(dir, `${'b'.repeat(64)}.json`), JSON.stringify({ state: 'complete',
+      bindings: [{ slot: question.slot, fingerprint: questionFingerprint(question, context) }],
+      result: { answers: [{ slot: question.slot, status: 'candidate', answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true }] } }));
+    const [cached] = await solveTest([question], context, { journalDir: dir, web: () => assert.fail('verified answer must be reused') });
+    assert.equal(cached.decision.cached, true);
+    for (const [changed, material] of [[{ ...question, text: 'A changed question?' }, context], [question, { ...context, contextHash: 'new' }],
+      [{ ...question, memory: { ...question.memory, excludedAnswers: [[options[0].id]] } }, context]]) {
+      let called = false;
+      await solveTest([changed], material, { journalDir: dir, web: async batch => { called = true; return batch.map(q => ({ slot: q.slot, answer: [options[1].id], status: 'candidate' })); } });
+      assert.equal(called, true);
+    }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

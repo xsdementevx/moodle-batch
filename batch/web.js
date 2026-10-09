@@ -1,11 +1,11 @@
-import { readFile, access, writeFile } from 'node:fs/promises';
+import { readFile, access, writeFile, rename } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { answerSignature } from './answers.js';
-import { cookieState } from './moodle.js';
+import { cookieState, openParser } from './moodle.js';
 import { checkpointed, selectContext } from './solve.js';
 import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
-import { verifyEvidence } from './evidence.js';
+import { verifyEvidence, sourceText } from './evidence.js';
 
 export function webPrompt(questions, context, requestId) {
   return 'Реши вопросы теста. Используй приложенный контекст и обязательно веб-поиск. '
@@ -176,7 +176,7 @@ export async function readWebResult(page, questions, requestId, parentRequestId)
   return { answers: parseWeb(text, questions, requestId, citations), conversationUrl: page.url() };
 }
 
-export async function dispatchWeb(page, questions, context, { requestId, journalPath, reasoning = 'instant', parentRequestId, questionIds }) {
+export async function dispatchWeb(page, questions, context, { requestId, journalPath, reasoning = 'instant', parentRequestId, questionIds, bindings }) {
   const composer = await readyWeb(page);
   const users = page.locator('[data-message-author-role="user"],[data-content-search-turn-key]');
   const parents = parentRequestId ? [parentRequestId].flat() : [];
@@ -215,21 +215,15 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
     try {
       const result = await readWebResult(page, questions, requestId, parentRequestId);
       result.answers = await verifyEvidence(result.answers, questions, context, {
-        textFromHtml: html => page.evaluate(raw => {
-          const doc = new DOMParser().parseFromString(raw, 'text/html');
-          doc.querySelectorAll('script,style,noscript').forEach(e => e.remove());
-          doc.querySelectorAll('br').forEach(e => e.replaceWith('\n'));
-          doc.querySelectorAll('p,div,li,section,article,h1,h2,h3,td').forEach(e => { e.prepend('\n'); e.append('\n'); });
-          return doc.body.textContent;
-        }, html),
+        textFromHtml: html => page.evaluate(sourceText, html),
       });
-      return { ...result, reasoning: effort };
+      return { ...result, reasoning: effort, sourcePolicy: 2 };
     } catch (error) {
-      await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, conversationUrl: page.url() }), { mode: 0o600 });
+      await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: page.url() }), { mode: 0o600 });
       if (/^[A-Z_]+$/u.test(error.message || '')) throw error;
       throw new Error('UNKNOWN_WEB_OUTCOME');
     }
-  }, questionIds);
+  }, questionIds, bindings);
   return snapshot.answers.map(answer => ({ ...answer, conversationUrl: snapshot.conversationUrl,
     ...(snapshot.reasoning ? { reasoning: snapshot.reasoning } : {}) }));
 }
@@ -254,9 +248,23 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
     // Check completed/pending journals before opening the browser or touching a draft.
     try {
       const cached = JSON.parse(await readFile(options.journalPath, 'utf8'));
-      if (cached.state === 'complete') return cached.result.answers.map(answer => ({ ...answer,
+      if (cached.state === 'complete') {
+        const recheck = answer => answer.status === 'needs_review' && answer.evidence?.kind === 'web' && answer.answer !== null;
+        if (cached.result.sourcePolicy !== 2 && cached.result.answers.some(recheck)) {
+          const parser = await openParser();
+          try {
+            const checked = await verifyEvidence(cached.result.answers.filter(recheck).map(answer => ({ ...answer, status: 'candidate' })),
+              questions, context, { textFromHtml: html => parser.sourceText(html) });
+            cached.result.answers = cached.result.answers.map(answer => checked.find(a => a.slot === answer.slot) || answer);
+            cached.result.sourcePolicy = 2;
+            await writeFile(`${options.journalPath}.tmp`, JSON.stringify(cached), { mode: 0o600 });
+            await rename(`${options.journalPath}.tmp`, options.journalPath);
+          } finally { await parser.close(); }
+        }
+        return cached.result.answers.map(answer => ({ ...answer,
         ...(cached.result.conversationUrl ? { conversationUrl: cached.result.conversationUrl } : {}),
         ...(cached.result.reasoning ? { reasoning: cached.result.reasoning } : {}) }));
+      }
       if (cached.state === 'pending') throw new Error('UNKNOWN_MODEL_OUTCOME');
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (extension) {

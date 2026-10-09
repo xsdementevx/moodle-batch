@@ -96,7 +96,7 @@ export async function requestJev(packet, { key, fetchImpl = fetch } = {}) {
   return response.json();
 }
 
-export async function checkpointed(path, dispatch, questionIds) {
+export async function checkpointed(path, dispatch, questionIds, bindings) {
   try {
     const saved = JSON.parse(await readFile(path, 'utf8'));
     if (saved.state === 'complete') return saved.result;
@@ -105,9 +105,9 @@ export async function checkpointed(path, dispatch, questionIds) {
   const temp = `${path}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   // Exclusive creation also prevents concurrent processes from dispatching the same packet.
-  await writeFile(path, JSON.stringify({ state: 'pending', questionIds }), { flag: 'wx', mode: 0o600 });
+  await writeFile(path, JSON.stringify({ state: 'pending', questionIds, bindings }), { flag: 'wx', mode: 0o600 });
   const result = await dispatch();
-  await writeFile(temp, JSON.stringify({ state: 'complete', result }), { mode: 0o600 });
+  await writeFile(temp, JSON.stringify({ state: 'complete', result, bindings }), { mode: 0o600 });
   await rename(temp, path);
   return result;
 }
@@ -137,6 +137,11 @@ export function questionPackets(questions, context, limit = 100000, maxQuestions
   return packets;
 }
 
+export function questionFingerprint(q, context) {
+  return digest([questionKey(q), q.textFormat || null, (context.documents?.[q.contextId] || context).contextHash || null,
+    q.memory?.excludedAnswers || []]);
+}
+
 export async function solveTest(questions, context, { journalDir, jev = requestJev, web, stopped = () => false, progress = async () => {} } = {}) {
   if (new Set(questions.map(q => q.slot)).size !== questions.length) throw new Error('DUPLICATE_QUESTION_ID');
   const check = () => { if (stopped()) throw new Error('STOPPED'); };
@@ -150,8 +155,19 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     const saved = JSON.parse(await readFile(join(journalDir, name), 'utf8'));
     if (saved.state === 'pending' && questionIds.size
       && (!saved.questionIds || saved.questionIds.some(id => questionIds.has(id)))) throw new Error('UNKNOWN_MODEL_OUTCOME');
+    if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
+      for (const q of unresolved) {
+        const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
+        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && a.status === 'candidate' && a.evidenceVerified === true);
+        if (answer) {
+          try { answerSignature(q, answer.answer); decisions.set(q.slot, { ...answer, cached: true }); }
+          catch { /* a malformed old result never becomes a reusable answer */ }
+        }
+      }
+    }
   }
-  const eligible = unresolved.filter(q => ['choice', 'multiple', 'matching'].includes(q.type)
+  const bindings = batch => batch.map(q => ({ slot: q.slot, fingerprint: questionFingerprint(q, context) }));
+  const eligible = unresolved.filter(q => !decisions.has(q.slot) && ['choice', 'multiple', 'matching'].includes(q.type)
     && (context.documents?.[q.contextId] || context).status === 'ready'
     && (context.documents?.[q.contextId] || context).text.length >= 100);
   for (const supportsJev of questionPackets(eligible, context, 48000, 40, 'jev')) {
@@ -162,7 +178,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     const packet = jevPacket(supportsJev, excerpt);
     await progress('solving', { provider: 'Jev', questions: supportsJev.length, tests: new Set(supportsJev.map(q => q.quizId)).size });
     const id = digest(['jev-packet-v1', supportsJev.map(q => [q.attemptId, q.slot, questionKey(q)]), scoped.contextHash, packet.payload]);
-    const raw = await checkpointed(join(journalDir, `${id}.json`), () => jev(packet), supportsJev.map(identity));
+    const raw = await checkpointed(join(journalDir, `${id}.json`), () => jev(packet), supportsJev.map(identity), bindings(supportsJev));
     for (const [slot, answer] of parseJev(packet, raw)) decisions.set(slot, { ...answer, status: 'needs_review' });
   }
   const remaining = unresolved.filter(q => !decisions.has(q.slot) || decisions.get(q.slot).provider === 'jev')
@@ -178,7 +194,8 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       const id = digest(['web-packet-v3-evidence', batch.map(q => [q.attemptId, q.slot, questionKey(q), q.textFormat || null, q.memory.excludedAnswers]), scoped.contextHash]);
       const jevAnswers = new Map(batch.filter(q => decisions.get(q.slot)?.provider === 'jev').map(q => [q.slot, decisions.get(q.slot)]));
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });
-      let results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant', questionIds: batch.map(identity) });
+      let results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
+        questionIds: batch.map(identity), bindings: bindings(batch) });
       const accept = result => {
         const prior = jevAnswers.get(result.slot), q = batch.find(q => q.slot === result.slot);
         decisions.set(result.slot, prior && result.status === 'candidate' && answerSignature(q, prior.answer) === answerSignature(q, result.answer)
@@ -204,7 +221,8 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           await progress('solving', { provider: 'Web', reasoning: reasoning === 'medium' ? 'Medium' : 'High', questions: review.length,
             tests: new Set(review.map(q => q.quizId)).size });
           results = await web(review, scoped, { requestId: reviewId, journalPath: join(journalDir, `${reviewId}.json`), reasoning,
-            continueUrl: results[0]?.conversationUrl, parentRequestId: results[0]?.conversationUrl ? [...parents] : undefined, questionIds: review.map(identity) });
+            continueUrl: results[0]?.conversationUrl, parentRequestId: results[0]?.conversationUrl ? [...parents] : undefined,
+            questionIds: review.map(identity), bindings: bindings(review) });
           parents.push(reviewId);
           for (const result of results) accept(result);
           review = review.filter(q => decisions.get(q.slot)?.status === 'needs_review')

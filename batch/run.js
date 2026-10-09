@@ -61,6 +61,7 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, pro
   return { quizId, courseId: view.courseId, attemptId: test.attemptId, reviewUrl: submission.reviewUrl, grade, percent, gradePercent,
     total: review.questions.length, correct: review.questions.filter(q => q.feedback === 'correct').length,
     sources: questions.map(q => ({ slot: q.slot, provider: q.decision?.provider,
+      ...(q.decision?.cached ? { cached: true } : {}),
       ...(q.decision?.reasoning ? { reasoning: q.decision.reasoning } : {}),
       feedback: review.questions.find(item => item.slot === q.slot)?.feedback })) };
 }

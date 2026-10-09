@@ -1,6 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, rename } from 'node:fs/promises';
 import { chromium, request } from 'playwright';
 import { digest, normalize, optionId } from './answers.js';
+import { sourceText } from './evidence.js';
 
 export function cookieState(raw, origin) {
   const host = new URL(origin).hostname;
@@ -24,6 +25,7 @@ export async function openParser() {
   await context.route('**/*', route => route.abort());
   const page = await context.newPage();
   const parser = {
+    sourceText(html) { return page.evaluate(sourceText, html); },
     async grades(html, origin, userScope, courseId = null) {
       const result = await page.evaluate(({ html, origin, userScope, courseId }) => {
         const document = new DOMParser().parseFromString(html, 'text/html');
@@ -284,6 +286,14 @@ export async function openMoodle({ authFile, origin }) {
       verifiedUserScope = await parser.identify(body.toString('utf8'));
     } finally { await profile.dispose(); }
   } catch (error) { await api.dispose(); await parser.close(); throw error; }
+  const saveSession = async () => {
+    const state = cookieState(await api.storageState(), origin);
+    const temporary = `${authFile}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
+    await rename(temporary, authFile);
+  };
+  try { await saveSession(); }
+  catch (error) { await api.dispose(); await parser.close(); throw error; }
   async function read(input) {
     let target = new URL(input, origin);
     const original = new URL(target);
@@ -416,7 +426,10 @@ export async function openMoodle({ authFile, origin }) {
       }
       throw new Error('REDIRECT_LIMIT');
     },
-    async close() { await api.dispose(); await parser.close(); },
+    async close() {
+      try { await saveSession(); }
+      finally { await api.dispose(); await parser.close(); }
+    },
   };
 }
 
