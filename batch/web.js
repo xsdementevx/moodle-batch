@@ -25,11 +25,13 @@ export function webPrompt(questions, context, requestId) {
     + 'confidence от 0 до 1 — оценка уверенности после проверки. Если уверенность ниже 0.85 или источник не подтверждает именно выбранный ответ, needsReview=true. '
     + 'Для каждого ответа добавь evidence: {"kind":"context","contextId":"ID материала","quote":"точная цитата"} '
     + 'или {"kind":"web","url":"точный URL из поиска","quote":"точная цитата со страницы"}. '
+    + 'Если весь ответ требует нескольких цитат, evidence может быть массивом этих объектов. Для matching добавь каждому объекту rowIds: массив ID строк, которые подтверждает цитата; вместе покрой все строки. Для multiple добавь optionIds: массив выбранных ID, которые подтверждает цитата; вместе покрой весь выбранный набор. Каждая цитата должна быть точной и проверяемой. '
     + 'Цитата минимум 20 символов, без многоточий и пересказа, должна обосновывать выбранный ответ. Для multiple обоснуй весь набор. '
     + 'Открой найденную страницу и прочитай её; существующая ссылка сама по себе не подтверждает ответ. Если не нашёл фактического подтверждения, needsReview=true. '
     + 'previousUnverifiedAnswer — прежний неподтверждённый вариант: проверь его заново по контексту и источнику, исправь при необходимости.\n'
     + 'reviewReason объясняет отказ проверки: excluded_answer — Moodle уже отклонил этот вариант; context_quote_not_found — цитаты нет в материале; source_not_observed — URL не найден в реальном поиске; source_quote_not_found — цитата не найдена на странице. '
     + 'previousEvidence и previousRejectedAnswer нельзя повторять как подтверждённое решение. Найди точный источник и исправь ответ или оставь needsReview=true.\n'
+    + 'evidence_incomplete означает, что в массиве цитат не покрыты все строки matching или все выбранные варианты multiple: добавь недостающие проверенные цитаты и соответствующие ID.\n'
     + 'contextId связывает вопрос только с его материалом; контексты других тестов не применяй.\n'
     + JSON.stringify({ requestId, context: context.documents ? undefined : selectContext(context.text, questions, 100000),
       contexts: context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, doc.text])) : undefined,

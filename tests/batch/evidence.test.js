@@ -34,6 +34,27 @@ test('PDF discretionary word breaks do not invalidate quotes or merge different 
   }
 });
 
+test('multiple source quotes must all be observed, exact and cover every matching row or selected option', async () => {
+  const first = 'The first event happened on the verified earlier date.';
+  const second = 'The second event happened on the verified later date.';
+  const urls = ['https://source.example/first', 'https://source.example/second'];
+  const question = { slot: '1', type: 'matching', rows: [{ id: 'r1' }, { id: 'r2' }] };
+  const evidence = [first, second].map((quote, i) => ({ kind: 'web', url: urls[i], quote, rowIds: [`r${i + 1}`] }));
+  const decision = { slot: '1', status: 'candidate', answer: { r1: 'o1', r2: 'o2' }, sourceUrls: urls, evidence };
+  const options = { readSource: async url => url === urls[0] ? first : second, renderSource: null };
+  const verify = d => verifyEvidence([d], [question], {}, options).then(r => r[0]);
+  assert.equal((await verify(decision)).evidenceVerified, true);
+  for (const wrong of [[], [evidence[0]], [...evidence, { ...evidence[0], rowIds: ['foreign'] }],
+    [evidence[0], { ...evidence[1], quote: 'An invented event and invented date.' }],
+    [evidence[0], { ...evidence[1], url: 'https://unobserved.example/' }]]) {
+    assert.equal((await verify({ ...decision, evidence: wrong })).status, 'needs_review');
+  }
+  const multiple = { slot: '1', type: 'multiple' };
+  const mapped = evidence.map(({ rowIds, ...item }, i) => ({ ...item, optionIds: [`o${i + 1}`] }));
+  assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: mapped }], [multiple], {}, options))[0].evidenceVerified, true);
+  assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: [mapped[0]] }], [multiple], {}, options))[0].reviewReason, 'evidence_incomplete');
+});
+
 test('JavaScript source rendering is isolated, permits normal same-origin loading and blocks private cross-origin reads', async () => {
   const browser = await chromium.launch();
   let isolated, privateBlocked = false;

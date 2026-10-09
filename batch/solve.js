@@ -204,7 +204,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       try {
         if (JSON.parse(await readFile(join(journalDir, `${legacyId}.json`), 'utf8')).state === 'pending') throw new Error('UNKNOWN_MODEL_OUTCOME');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      const id = digest(['web-packet-v3-evidence', batch.map(q => [q.attemptId, q.slot, questionKey(q), q.textFormat || null, q.memory.excludedAnswers,
+      const id = digest([batch.some(q => ['matching', 'multiple'].includes(q.type)) ? 'web-packet-v4-multisource' : 'web-packet-v3-evidence', batch.map(q => [q.attemptId, q.slot, questionKey(q), q.textFormat || null, q.memory.excludedAnswers,
         ...(q.memory.matchingRows ? [q.memory.matchingRows] : [])]), scoped.contextHash]);
       const jevAnswers = new Map(batch.filter(q => decisions.get(q.slot)?.provider === 'jev').map(q => [q.slot, decisions.get(q.slot)]));
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });

@@ -83,11 +83,9 @@ export async function verifyEvidence(decisions, questions, context, { readSource
   renderSource = readRenderedSource, textFromHtml } = {}) {
   const pages = new Map();
   const results = [];
-  for (const decision of decisions) {
+  async function verifyOne(evidence, decision, question) {
     let grounded = false;
-    const evidence = decision.evidence;
     if (decision.status === 'candidate' && typeof evidence?.quote === 'string' && evidenceText(evidence.quote).length >= 20) {
-      const question = questions.find(q => q.slot === decision.slot);
       if (evidence.kind === 'context') {
         const doc = context.documents?.[question.contextId] || context;
         grounded = (!context.documents || evidence.contextId === question.contextId)
@@ -113,10 +111,31 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         }
       }
     }
-    results.push({ ...decision, evidenceVerified: grounded,
-      ...(!grounded ? { reviewReason: decision.reviewReason || (decision.status !== 'candidate' ? 'model_uncertain'
+    return { grounded, reason: decision.status !== 'candidate' ? 'model_uncertain'
         : evidence?.kind === 'context' ? 'context_quote_not_found'
-        : !decision.sourceUrls.includes(evidence?.url) ? 'source_not_observed' : 'source_quote_not_found') } : {}),
+        : !decision.sourceUrls.includes(evidence?.url) ? 'source_not_observed' : 'source_quote_not_found' };
+  }
+  for (const decision of decisions) {
+    const question = questions.find(q => q.slot === decision.slot);
+    const evidence = Array.isArray(decision.evidence) ? decision.evidence : [decision.evidence];
+    let grounded = false, reason = decision.status === 'candidate' ? 'evidence_incomplete' : 'model_uncertain';
+    if (evidence.length && evidence.length <= 32 && question) {
+      const array = Array.isArray(decision.evidence);
+      const field = question.type === 'matching' ? 'rowIds' : question.type === 'multiple' ? 'optionIds' : null;
+      const required = field === 'rowIds' ? question.rows.map(row => row.id) : field === 'optionIds' ? decision.answer : [];
+      const covered = new Set(evidence.flatMap(item => Array.isArray(item?.[field]) ? item[field] : []));
+      const coverage = !array || !field || (Array.isArray(required) && evidence.every(item => Array.isArray(item?.[field])
+        && item[field].length && item[field].every(id => required.includes(id))) && required.every(id => covered.has(id)));
+      if (coverage) {
+        grounded = true;
+        for (const item of evidence) {
+          const check = await verifyOne(item, decision, question);
+          if (!check.grounded) { grounded = false; reason = check.reason; break; }
+        }
+      }
+    }
+    results.push({ ...decision, evidenceVerified: grounded,
+      ...(!grounded ? { reviewReason: decision.reviewReason || reason } : {}),
       status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status });
   }
   return results;
