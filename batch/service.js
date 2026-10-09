@@ -17,6 +17,17 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   const jobsPath = join(root, 'jobs.json');
   let overview = null, scanTask = null, scanError = null, active = null;
   let jobs = [];
+  const event = (job, kind, detail = {}) => {
+    const item = { at: new Date().toISOString(), kind };
+    // Keep only display-safe metadata; never persist prompts, answers or credentials here.
+    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'percent', 'error']) {
+      if (detail[key] !== undefined) item[key] = detail[key];
+    }
+    job.events ||= [];
+    job.events.push(item);
+    // ponytail: latest 300 events per job; result history remains complete.
+    if (job.events.length > 300) job.events.shift();
+  };
   try {
     const saved = JSON.parse(await readFile(report, 'utf8'));
     if (saved.schemaVersion === 1 && saved.origin === moodle.origin && saved.userScope === moodle.userScope) overview = saved;
@@ -26,7 +37,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     if (saved.origin === moodle.origin && saved.userScope === moodle.userScope) jobs = saved.jobs;
     if (!Array.isArray(jobs)) throw new Error();
   } catch (error) { if (error.code !== 'ENOENT') throw new Error('JOBS_CACHE_INVALID'); }
-  for (const job of jobs) if (!terminal(job.status)) { job.status = 'interrupted'; job.error = 'SERVICE_RESTARTED'; }
+  for (const job of jobs) if (!terminal(job.status)) { job.status = 'interrupted'; job.error = 'SERVICE_RESTARTED'; event(job, 'error', { error: job.error }); }
   // ponytail: one solver queue per account; keep GPT conversations and submission ordering simple.
   let writes = Promise.resolve();
   const save = () => {
@@ -76,11 +87,12 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
         const pending = job.results.filter(q => !q.error && q.status === 'running');
         if (!pending.length) break;
         const options = { root, web, stopped: () => job.stopRequested,
-          progress: async (stage, detail = {}) => { job.current = { round: n + 1, stage, ...detail }; await save(); },
+          progress: async (stage, detail = {}) => { job.current = { round: n + 1, stage, ...detail }; event(job, 'stage', job.current); await save(); },
           onResult: async result => {
             const quiz = job.results.find(q => q.quizId === result.quizId);
             quiz.attempts.push(result);
             quiz.status = result.percent === 100 ? 'maximum' : result.percent === null ? 'review' : 'running';
+            event(job, 'result', { quizId: result.quizId, round: n + 1, percent: result.percent ?? null });
             await save();
             recentGrades.set(result.quizId, result); updateGrade(result);
             if (overview && !scanTask) { await saveReport(); recentGrades.clear(); }
@@ -101,14 +113,16 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
         for (const { quizId, error } of outcomes) if (error) {
           const quiz = job.results.find(q => q.quizId === quizId);
           quiz.error = safeCode(error); quiz.status = 'error';
+          event(job, 'error', { quizId, round: n + 1, error: quiz.error });
           if (quiz.error === 'LOGIN_REQUIRED') moodle.authRequired = true;
         }
         await save();
       }
       for (const quiz of job.results) if (quiz.status === 'running') quiz.status = job.stopRequested ? 'stopped' : 'review';
       job.status = job.stopRequested ? 'stopped' : 'complete'; job.current = null;
+      event(job, job.stopRequested ? 'stopped' : 'complete');
       job.finishedAt = new Date().toISOString(); await save();
-    } catch (error) { job.status = 'interrupted'; job.error = safeCode(error); await save(); }
+    } catch (error) { job.status = 'interrupted'; job.error = safeCode(error); event(job, 'error', { error: job.error }); await save(); }
     finally { active = null; }
   };
   return {
@@ -130,6 +144,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
       if (moodle.authRequired) throw new Error('LOGIN_REQUIRED');
       if (active) throw new Error('JOB_ALREADY_RUNNING');
       const job = { ...input, status: 'queued', stopRequested: false, createdAt: new Date().toISOString(), results: [] };
+      event(job, 'start');
       jobs.push(job); active = job;
       try { await save(); } catch (error) { active = null; jobs.pop(); throw error; }
       // Execution lives in Node, not the extension service worker's limited lifetime.
@@ -140,7 +155,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     async stop(requestId) {
       const job = jobs.find(item => item.requestId === requestId);
       if (!job) throw new Error('JOB_NOT_FOUND');
-      if (!terminal(job.status)) { job.stopRequested = true; await save(); }
+      if (!terminal(job.status) && !job.stopRequested) { job.stopRequested = true; event(job, 'stop'); await save(); }
       return job;
     },
     async close() {

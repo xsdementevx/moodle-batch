@@ -29,7 +29,10 @@ test('service runs one durable job, rejects another and stops retries after veri
   let calls = 0;
   let release; const gate = new Promise(done => { release = done; });
   try {
-    service = await openService({ ...deps(root), runner: async () => { calls++; await gate; return { quizId: '20', courseId: '10', percent: calls === 1 ? 80 : 100, gradePercent: calls === 1 ? 80 : 100 }; } });
+    service = await openService({ ...deps(root), runner: async (moodle, store, quizId, options) => {
+      calls++; await options.progress('solving', { quizId, provider: 'Jev', questions: 1, context: 'private synthetic context' });
+      await gate; return { quizId: '20', courseId: '10', percent: calls === 1 ? 80 : 100, gradePercent: calls === 1 ? 80 : 100 };
+    } });
     await service.refresh();
     await service.start(input);
     assert.equal((await service.start(input)).requestId, input.requestId);
@@ -38,11 +41,17 @@ test('service runs one durable job, rejects another and stops retries after veri
     release(); await waitDone(service);
     assert.equal(calls, 2);
     assert.equal(service.state().jobs[0].results[0].status, 'maximum');
+    const events = service.state().jobs[0].events;
+    assert.equal(events[0].kind, 'start');
+    assert.equal(events.filter(e => e.kind === 'result').length, 2);
+    assert.equal(events.at(-1).kind, 'complete');
+    assert.equal(JSON.stringify(events).includes('private synthetic context'), false);
     assert.equal(service.state().overview.courses[0].quizzes[0].percent, 100);
     assert.equal(service.state().overview.courses[0].summary.maximum, 1);
     await service.close();
     service = await openService({ ...deps(root), runner: () => assert.fail('must not replay a completed job') });
     assert.equal((await service.start(input)).status, 'complete');
+    assert.deepEqual(service.state().jobs[0].events, events, 'log survives restart without replaying the job');
     assert.equal(service.state().overview.courses[0].quizzes[0].percent, 100);
     await assert.rejects(service.start({ ...input, userScope: '43' }), /INVALID_JOB/);
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
@@ -205,7 +214,14 @@ test('installed extension recovers a lost start reply after reopening without ch
     await dashboard.close();
     const reopened = await context.newPage();
     await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=42`);
-    await reopened.getByText('Запуск завершён', { exact: true }).waitFor();
+    await reopened.locator('#job-title').filter({ hasText: 'Запуск завершён' }).waitFor();
+    await reopened.locator('#nav-logs').click();
+    assert.equal(await reopened.locator('#logs-view').isVisible(), true);
+    assert.equal(await reopened.locator('.events li').count(), 3);
+    await reopened.locator('#errors-only').check();
+    assert.match(await reopened.locator('#jobs').textContent(), /Запусков с ошибками нет/);
+    await reopened.locator('#errors-only').uncheck();
+    await reopened.locator('#nav-tests').click();
     assert.equal(calls, 1);
     assert.equal(await reopened.locator('.quiz input').isChecked(), true);
     assert.equal(await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob')).pendingJob), undefined);
@@ -235,6 +251,18 @@ test('installed extension recovers a lost start reply after reopening without ch
     await reopened.locator('#select').click();
     assert.equal(await reopened.locator('.quiz input:checked').count(), 1);
     assert.equal(await reopened.locator('#run').isDisabled(), false);
+    await reopened.locator('#search').fill('not-found');
+    assert.equal(await reopened.locator('.quiz').count(), 0);
+    assert.equal(await reopened.locator('#empty').isVisible(), true);
+    assert.match(await reopened.locator('#hidden-selected').textContent(), /1 скрыто/);
+    await reopened.locator('#search').fill('21');
+    assert.equal(await reopened.locator('.quiz').count(), 1);
+    await reopened.locator('#clear').click();
+    assert.equal(await reopened.locator('#run').isDisabled(), true);
+    await reopened.locator('.course-select').click();
+    assert.equal(await reopened.locator('.quiz input:checked').count(), 1);
+    await reopened.locator('#grade-filter').selectOption('selected');
+    assert.equal(await reopened.locator('.quiz').count(), 1);
     assert.equal(calls, 1, 'filtering and selecting must not send an attempt');
     assert.equal(await page.locator('#responseform input').inputValue(), 'unchanged');
   } finally { await context?.close(); if (server) await new Promise(done => server.close(done)); await service?.close(); await rm(root, { recursive: true, force: true }); }
