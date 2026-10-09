@@ -31,7 +31,8 @@ test('legacy short-answer wording rules preserve source words, strip repeated un
   assert.equal(answer.answer, 'трое');
   assert.equal(answer.rawAnswer, 'трое суток');
   assert.equal(parseWeb(payload('3'), [{ ...question, textFormat: 'numerical' }], 'nonce', ['https://source.example/one'])[0].answer, '3');
-  assert.throws(() => parseWeb(payload('трое суток'), [{ ...question, memory: { excludedAnswers: ['трое'] } }], 'nonce', ['https://source.example/one']), /EXCLUDED_WEB_ANSWER/);
+  const excluded = parseWeb(payload('трое суток'), [{ ...question, memory: { excludedAnswers: ['трое'] } }], 'nonce', ['https://source.example/one'])[0];
+  assert.equal(excluded.answer, null); assert.equal(excluded.reviewReason, 'excluded_answer');
   assert.ok(webPrompt([question], { text: '' }, 'nonce').includes('не заменяй словесное число цифрой'));
 });
 
@@ -181,7 +182,9 @@ test('Web validates request identity, coverage, answers and observed source link
   assert.equal(parseWeb(linked('https://source.example/a/b'), [question], 'nonce', ['https://source.example/a%2Fb'])[0].status, 'needs_review');
   assert.equal(parseWeb(linked('https://source.example/a?x=1'), [question], 'nonce', ['https://source.example/a?x=2'])[0].status, 'needs_review');
   assert.throws(() => parseWeb(JSON.stringify(result), [question], 'different', []), /INCOMPLETE_WEB_RESPONSE/);
-  assert.throws(() => parseWeb(JSON.stringify(result), [q('1', { memory: { excludedAnswers: [[options[1].id]] } })], 'nonce', []), /EXCLUDED_WEB_ANSWER/);
+  const excluded = parseWeb(JSON.stringify(result), [q('1', { memory: { excludedAnswers: [[options[1].id]] } })], 'nonce', [])[0];
+  assert.equal(excluded.status, 'needs_review'); assert.equal(excluded.answer, null);
+  assert.equal(excluded.reviewReason, 'excluded_answer');
   assert.ok(!webPrompt([question], { text: '' }, 'nonce').includes('sequencecheck'));
   await assert.rejects(readyWeb({ title: async () => 'Just a moment...' }), /GPT_WEB_CHALLENGE/);
 });
@@ -193,7 +196,14 @@ test('web verification revisits only needs_review questions and reuses escalatio
   const calls = [];
   const web = (batch, context, options) => checkpointed(options.journalPath, async () => {
     calls.push(batch.map(q => q.slot));
+    if (calls.length === 2) {
+      assert.equal(batch[0].reviewReason, 'context_quote_not_found');
+      assert.equal(batch[0].previousEvidence.quote, 'A quote missing from the material.');
+      const input = JSON.parse(webPrompt(batch, context, options.requestId).split('\n').at(-1));
+      assert.equal(input.questions[0].reviewReason, batch[0].reviewReason);
+    }
     return batch.map(question => ({ slot: question.slot, provider: 'gpt_web', answer: [question.options[0].id],
+      reviewReason: 'context_quote_not_found', evidence: { kind: 'context', quote: 'A quote missing from the material.' },
       status: question.slot === '1' && !Object.hasOwn(question, 'previousUnverifiedAnswer') ? 'needs_review' : 'candidate' }));
   });
   try {

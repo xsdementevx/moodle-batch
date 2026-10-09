@@ -113,6 +113,9 @@ export async function verifyEvidence(decisions, questions, context, { readSource
       }
     }
     results.push({ ...decision, evidenceVerified: grounded,
+      ...(!grounded ? { reviewReason: decision.reviewReason || (decision.status !== 'candidate' ? 'model_uncertain'
+        : evidence?.kind === 'context' ? 'context_quote_not_found'
+        : !decision.sourceUrls.includes(evidence?.url) ? 'source_not_observed' : 'source_quote_not_found') } : {}),
       status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status });
   }
   return results;

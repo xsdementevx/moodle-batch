@@ -20,12 +20,15 @@ export function webPrompt(questions, context, requestId) {
     + 'Для каждого ответа sourceUrls должны содержать точные URL страниц из результатов твоего веб-поиска, которые подтверждают этот ответ. '
     + 'Если первый поиск не подтвердил ответ, ищи повторно другими формулировками; предпочитай первоисточник и точную формулировку учебного материала. '
     + 'Проверь отрицания, исключения, число требуемых вариантов и каждый элемент multiple/matching. При противоречиях сравни источники и контекст. '
+    + 'В matching порядок отображения строк не задаёт последовательность: ориентируйся на текст и номер каждой строки. Для хронологии назначай события номерам строк по датам, даже если строки показаны в порядке 4, 3, 1, 2. '
     + 'confidence от 0 до 1 — оценка уверенности после проверки. Если уверенность ниже 0.85 или источник не подтверждает именно выбранный ответ, needsReview=true. '
     + 'Для каждого ответа добавь evidence: {"kind":"context","contextId":"ID материала","quote":"точная цитата"} '
     + 'или {"kind":"web","url":"точный URL из поиска","quote":"точная цитата со страницы"}. '
     + 'Цитата минимум 20 символов, без многоточий и пересказа, должна обосновывать выбранный ответ. Для multiple обоснуй весь набор. '
     + 'Открой найденную страницу и прочитай её; существующая ссылка сама по себе не подтверждает ответ. Если не нашёл фактического подтверждения, needsReview=true. '
     + 'previousUnverifiedAnswer — прежний неподтверждённый вариант: проверь его заново по контексту и источнику, исправь при необходимости.\n'
+    + 'reviewReason объясняет отказ проверки: excluded_answer — Moodle уже отклонил этот вариант; context_quote_not_found — цитаты нет в материале; source_not_observed — URL не найден в реальном поиске; source_quote_not_found — цитата не найдена на странице. '
+    + 'previousEvidence и previousRejectedAnswer нельзя повторять как подтверждённое решение. Найди точный источник и исправь ответ или оставь needsReview=true.\n'
     + 'contextId связывает вопрос только с его материалом; контексты других тестов не применяй.\n'
     + JSON.stringify({ requestId, context: context.documents ? undefined : selectContext(context.text, questions, 100000),
       contexts: context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, doc.text])) : undefined,
@@ -33,6 +36,7 @@ export function webPrompt(questions, context, requestId) {
         options: q.options.map(o => ({ id: o.id, text: o.text })),
         rows: q.rows.map(row => ({ id: row.id, text: row.text, options: row.options.map(o => ({ id: o.id, text: o.text })) })),
         excludedAnswers: q.memory?.excludedAnswers || [],
+        ...(q.reviewReason ? { reviewReason: q.reviewReason, previousEvidence: q.previousEvidence, previousRejectedAnswer: q.previousRejectedAnswer } : {}),
         ...(Object.hasOwn(q, 'previousUnverifiedAnswer') ? { previousUnverifiedAnswer: q.previousUnverifiedAnswer } : {}) })) });
 }
 
@@ -56,7 +60,9 @@ export function parseWeb(text, questions, requestId, citations) {
     const answer = q.type === 'text' && q.textFormat !== 'numerical'
       ? normalizeShortAnswerForQuestion(q.text, item.answer) : item.answer;
     const signature = answerSignature(q, answer);
-    if (q.memory?.excludedAnswers.some(a => answerSignature(q, a) === signature)) throw new Error('EXCLUDED_WEB_ANSWER');
+    if (q.memory?.excludedAnswers.some(a => answerSignature(q, a) === signature)) return {
+      slot: q.slot, provider: 'gpt_web', answer: null, rejectedAnswer: answer, status: 'needs_review',
+      reviewReason: 'excluded_answer', sourceUrls, verifiedByMoodle: false };
     return { slot: q.slot, provider: 'gpt_web', answer, ...(answer !== item.answer ? { rawAnswer: item.answer } : {}),
       status: sourceUrls.length || item.evidence?.kind === 'context' ? 'candidate' : 'needs_review',
       ...(item.evidence ? { evidence: item.evidence } : {}), sourceUrls, searchObserved: citations.length > 0, verifiedByMoodle: false };

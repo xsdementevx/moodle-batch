@@ -48,7 +48,8 @@ export function jevPacket(questions, context) {
       bindings.push({ id, q });
     } else if (q.type === 'matching') {
       q.rows.forEach((row, j) => {
-        specs[`${id}_r${j}`] = { type: 'choice', instructions: { ...instructions, row: row.text, rule: instructions.rule + ' Answers may repeat across rows unless the question forbids it.' },
+        specs[`${id}_r${j}`] = { type: 'choice', instructions: { ...instructions, row: row.text,
+          rule: instructions.rule + ' Answers may repeat across rows unless the question forbids it. Display order is not answer order. For chronological sequences use the explicit row number and verified event dates, even if row numbers are shuffled.' },
           criteria: { ...Object.fromEntries(row.options.map((o, k) => [`o${k}`, o.text])), insufficient_context: 'Not established by the context.' } };
       });
       bindings.push({ id, q });
@@ -213,8 +214,13 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           ? { ...result, provider: 'jev', verifiedBy: 'gpt_web' } : result);
       };
       for (const result of results) accept(result);
+      const reviewQuestion = q => {
+        const decision = decisions.get(q.slot);
+        return { ...q, previousUnverifiedAnswer: decision.answer, reviewReason: decision.reviewReason,
+          previousEvidence: decision.evidence, previousRejectedAnswer: decision.rejectedAnswer };
+      };
       let review = batch.filter(q => decisions.get(q.slot)?.status === 'needs_review')
-        .map(q => ({ ...q, previousUnverifiedAnswer: decisions.get(q.slot).answer }));
+        .map(reviewQuestion);
       if (review.length) {
         const previousId = digest(['web-verification-v1', id, review.map(q => [q.slot, q.previousUnverifiedAnswer])]);
         try {
@@ -228,7 +234,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         for (const reasoning of ['medium', 'high']) {
           if (!review.length) break;
           check();
-          const reviewId = digest(['web-escalation-v1', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer])]);
+          const reviewId = digest(['web-escalation-v2-feedback', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer, q.reviewReason, q.previousEvidence, q.previousRejectedAnswer])]);
           await progress('solving', { provider: 'Web', reasoning: reasoning === 'medium' ? 'Medium' : 'High', questions: review.length,
             tests: new Set(review.map(q => q.quizId)).size });
           results = await web(review, scoped, { requestId: reviewId, journalPath: join(journalDir, `${reviewId}.json`), reasoning,
@@ -237,7 +243,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           parents.push(reviewId);
           for (const result of results) accept(result);
           review = review.filter(q => decisions.get(q.slot)?.status === 'needs_review')
-            .map(q => ({ ...q, previousUnverifiedAnswer: decisions.get(q.slot).answer }));
+            .map(reviewQuestion);
         }
       }
     }
