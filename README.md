@@ -47,6 +47,12 @@ npm run batch:serve
 `.playwright-mcp/reference-auth/cookies.json` и нажмите «Обновить анализ»:
 сервис проверит тот же аккаунт и восстановит работу без перезапуска.
 
+Для входа без ручного экспорта cookies заполните локальный файл
+`.playwright-mcp/reference-auth/moodle-login.json`: `url`, `username`, `password`.
+Файл исключён из Git. Откройте Яндекс и выполните `npm run batch:login`, затем
+нажмите «Обновить анализ». Команда проверяет сохранённый аккаунт и закрывает
+только свои вкладки. Пароль хранится в этом файле открытым текстом.
+
 Подробности: [расширение](docs/MOODLE_BATCH_EXTENSION.md), [командный запуск](docs/BATCH_RUNNER.md).
 
 Проект выделен из `ai-question-hints-v2.6.2`, исходный коммит `f336908`.
