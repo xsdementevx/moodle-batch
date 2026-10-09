@@ -75,7 +75,8 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, pro
     sources: questions.map(q => ({ slot: q.slot, provider: q.decision?.provider,
       ...(q.decision?.cached ? { cached: true } : {}),
       ...(q.decision?.reasoning ? { reasoning: q.decision.reasoning } : {}),
-      feedback: review.questions.find(item => item.slot === q.slot)?.feedback })) };
+      feedback: review.questions.find(item => item.slot === q.slot)?.feedback,
+      ...(q.type === 'multiple' ? { options: review.questions.find(item => item.slot === q.slot)?.options.filter(o => o.selected).map(o => ({ text: o.text, feedback: o.feedback })) || [] } : {}) })) };
 }
 
 export async function runQuiz(moodle, store, quizId, options = {}) {

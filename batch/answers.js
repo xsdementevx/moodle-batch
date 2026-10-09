@@ -48,6 +48,7 @@ function decodeAnswer(question, signature) {
 export function isExcludedAnswer(question, answer) {
   const signature = answerSignature(question, answer);
   return Boolean(question.memory?.excludedAnswers?.some(item => answerSignature(question, item) === signature)
+    || (question.type === 'multiple' && Object.entries(question.memory?.multipleOptions || {}).some(([id, included]) => answer.includes(id) !== included))
     || (question.type === 'matching' && question.rows.some(row => {
       const memory = question.memory?.matchingRows?.[row.id];
       return memory && ((memory.answer && memory.answer !== answer[row.id]) || memory.excludedAnswers.includes(answer[row.id]));
@@ -91,6 +92,12 @@ export function openAnswers(path) {
               item.outcome, JSON.stringify(question), question.sourceUrl);
             imported++;
           }
+          if (question.type === 'multiple') for (const option of question.options) {
+            if (!option.selected || !question.answer?.includes(option.id) || !['correct', 'incorrect'].includes(option.feedback)) continue;
+            insert.run(key, question.quizId, question.attemptId, String(question.slot), `option:${option.id}`,
+              JSON.stringify(option.id), option.feedback, JSON.stringify(question), question.sourceUrl);
+            imported++;
+          }
           if (question.type === 'matching') for (const row of question.rows) {
             if (!['correct', 'incorrect'].includes(row.feedback)) continue;
             const selected = row.options.filter(o => o.value === row.selectedValue);
@@ -108,10 +115,22 @@ export function openAnswers(path) {
       let key;
       try { key = questionKey(question); } catch { return { status: 'unsupported', answer: null, excludedAnswers: [], observations: 0 }; }
       const all = read.all(key);
-      const records = all.filter(r => !r.evidence.startsWith('row:'));
+      const records = all.filter(r => !r.evidence.startsWith('row:') && !r.evidence.startsWith('option:'));
       const positive = [...new Set(records.filter(r => r.outcome === 'correct').map(r => r.answer))];
       const negative = [...new Set(records.filter(r => ['incorrect', 'partiallycorrect'].includes(r.outcome)).map(r => r.answer))];
       let conflict = positive.length > 1 || positive.some(answer => negative.includes(answer));
+      const multipleOptions = {};
+      if (question.type === 'multiple') for (const option of question.options) {
+        const outcomes = new Set(all.filter(r => r.evidence === `option:${option.id}`).map(r => r.outcome === 'correct'));
+        for (const signature of positive) outcomes.add(decodeAnswer(question, signature).includes(option.id));
+        if (outcomes.size > 1) conflict = true;
+        else if (outcomes.size === 1) multipleOptions[option.id] = [...outcomes][0];
+      }
+      if (!conflict && question.type === 'multiple' && question.options.every(option => Object.hasOwn(multipleOptions, option.id))) {
+        const signature = answerSignature(question, question.options.filter(option => multipleOptions[option.id]).map(option => option.id));
+        if (negative.includes(signature)) conflict = true;
+        else if (!positive.includes(signature)) positive.push(signature);
+      }
       const matchingRows = {};
       if (question.type === 'matching') for (const row of question.rows) {
         const observations = all.filter(r => r.evidence === `row:${row.id}`);
@@ -131,6 +150,7 @@ export function openAnswers(path) {
         answer: !conflict && positive.length === 1 ? decodeAnswer(question, positive[0]) : null,
         excludedAnswers: conflict ? [] : negative.map(signature => decodeAnswer(question, signature)),
         observations: all.length,
+        ...(Object.keys(multipleOptions).length ? { multipleOptions: conflict ? {} : multipleOptions } : {}),
         ...(Object.keys(matchingRows).length ? { matchingRows: conflict ? {} : matchingRows } : {}),
       };
     },

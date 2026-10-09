@@ -7,6 +7,23 @@ const source = 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20';
 const html = (content, kind = 'review') => `<!doctype html><body id="page-mod-quiz-${kind}" data-course-id="10" data-quiz-id="20" data-user-scope="u1">${content}</body>`;
 const choice = (state = 'incorrect') => `<div class="que multichoice ${state}" id="question-100-1"><div class="formulation"><div class="qtext">Choose<br>a sample.</div><div class="answer"><div class="r0"><input type="radio" name="q100:1_answer" id="a" value="0" checked disabled aria-labelledby="label-a"><div id="label-a"><span class="answernumber">a.</span>Alpha</div></div><div class="r1"><input type="radio" name="q100:1_answer" id="b" value="1" disabled><label for="b"><span class="answernumber">b.</span>Beta</label></div></div><input name="q100:1_:sequencecheck" value="2"></div><input type="checkbox" name="q100:1_:flagged" checked><div class="rightanswer">Правильный ответ: Beta</div></div>`;
 
+test('multiple option marks survive partial review without inventing feedback for unselected choices', async () => {
+  const parser = await openParser();
+  const store = openAnswers(':memory:');
+  try {
+    const controls = [['Alpha', true, 'correct'], ['Beta', true, 'incorrect'], ['Gamma', false, 'incorrect']]
+      .map(([text, checked, state], i) => `<div class="r${i % 2} ${state}"><input type="checkbox" id="o${i}" name="q100:1_choice${i}" value="1" ${checked ? 'checked' : ''} disabled><label for="o${i}">${text}</label></div>`).join('');
+    const review = await parser.parse(html(`<div class="que multichoice partiallycorrect" id="question-100-1"><div class="qtext">Select types.</div><div class="answer">${controls}</div></div>`), source);
+    const q = review.questions[0];
+    assert.deepEqual(q.options.map(o => o.feedback), ['correct', 'incorrect', 'unconfirmed']);
+    store.importReview([q]);
+    const memory = store.lookup(q);
+    assert.equal(memory.status, 'unresolved');
+    assert.deepEqual(memory.multipleOptions, { [optionId('Alpha')]: true, [optionId('Beta')]: false });
+    assert.equal(Object.hasOwn(memory.multipleOptions, optionId('Gamma')), false);
+  } finally { store.close(); await parser.close(); }
+});
+
 test('attempt limits and used attempts come from quiz metadata, never from question text', async () => {
   const parser = await openParser();
   const url = 'https://moodle.example/mod/quiz/view.php?id=20';

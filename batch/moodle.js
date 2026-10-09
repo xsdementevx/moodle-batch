@@ -162,7 +162,8 @@ export async function openParser() {
           };
           if (q.querySelector('.qtext img,.qtext svg,.qtext math,.qtext canvas,.qtext video,.qtext audio,.answer img,.answer math,.answer svg')) unsupportedReason = 'MEDIA_REQUIRES_EXTRACTION';
           const choices = radios.length ? radios : checkboxes;
-          const options = choices.map(input => ({ text: optionText(input), fieldName: input.name, value: input.value, selected: input.checked }));
+          const options = choices.map(input => ({ text: optionText(input), fieldName: input.name, value: input.value, selected: input.checked,
+            feedback: input.checked ? ['correct', 'incorrect'].find(state => input.closest('.r0,.r1')?.classList.contains(state)) || 'unconfirmed' : 'unconfirmed' }));
           const rows = selects.map(select => ({
             text: cleanText(select.closest('tr')?.querySelector('.text')), fieldName: select.name,
             options: [...select.options].filter(o => o.value !== '' && o.value !== '0').map(o => ({ text: norm(o.textContent), value: o.value })),

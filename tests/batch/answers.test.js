@@ -10,6 +10,30 @@ const question = (extra = {}) => ({ origin: 'https://moodle.example', userScope:
   attemptId: '30', slot: '1', pageKind: 'review', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20',
   type: 'choice', text: 'Choose a sample answer.', options, rows: [], answer: [options[0].id], feedback: 'correct', ...extra });
 
+test('multiple option memory excludes explicit wrong choices, preserves required choices and detects conflicts', () => {
+  const store = openAnswers(':memory:');
+  const q = question({ type: 'multiple', feedback: 'partiallycorrect', answer: [options[0].id, options[1].id],
+    options: options.map((o, i) => ({ ...o, selected: i < 2, feedback: i === 0 ? 'correct' : i === 1 ? 'incorrect' : 'unconfirmed' })) });
+  try {
+    store.importReview([q]);
+    const memory = store.lookup(q);
+    assert.equal(memory.status, 'unresolved');
+    assert.equal(isExcludedAnswer({ ...q, memory }, [options[0].id]), false);
+    assert.equal(isExcludedAnswer({ ...q, memory }, [options[0].id, options[2].id]), false);
+    assert.equal(isExcludedAnswer({ ...q, memory }, [options[2].id]), true);
+    assert.equal(isExcludedAnswer({ ...q, memory }, [options[0].id, options[1].id, options[2].id]), true);
+    const next = { ...q, attemptId: '31', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=31'), answer: [options[2].id],
+      options: q.options.map((o, i) => ({ ...o, selected: i === 2, feedback: i === 2 ? 'incorrect' : 'unconfirmed' })) };
+    store.importReview([next]);
+    const known = store.lookup({ ...q, options: [...q.options].reverse() });
+    assert.equal(known.status, 'known');
+    assert.deepEqual(known.answer, [options[0].id]);
+    store.importReview([{ ...next, attemptId: '32', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=32'), answer: [options[1].id],
+      options: q.options.map((o, i) => ({ ...o, selected: i === 1, feedback: i === 1 ? 'correct' : 'unconfirmed' })) }]);
+    assert.equal(store.lookup(q).status, 'conflict');
+  } finally { store.close(); }
+});
+
 test('matching row observations survive hidden feedback, aggregate across attempts and reject conflicts', () => {
   const store = openAnswers(':memory:');
   const rowOptions = options.map((o, i) => ({ ...o, value: String(i + 1) }));

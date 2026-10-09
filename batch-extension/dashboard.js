@@ -102,7 +102,10 @@ function reportFor(job) {
     for (const question of result.unresolvedQuestions || []) lines.push(`  Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
-      for (const source of attempt.sources || []) lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${feedbackLabel(source.feedback)}`);
+      for (const source of attempt.sources || []) {
+        lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${feedbackLabel(source.feedback)}`);
+        for (const option of source.options || []) lines.push(`      ${option.text}: ${feedbackLabel(option.feedback)}`);
+      }
     }
   }
   lines.push('', 'ЭТАПЫ (по времени)');
@@ -146,7 +149,15 @@ function showJobs(force = false) {
     if (last?.sources?.length) {
       const review = node('details'); review.append(node('summary', 'Проверка каждого вопроса Moodle'));
       const list = node('ul');
-      for (const source of last.sources) list.append(node('li', `Вопрос ${source.slot}: ${feedbackLabel(source.feedback)} · ${source.provider || 'провайдер не указан'}`, source.feedback === 'correct' ? 'good' : ['incorrect', 'partiallycorrect'].includes(source.feedback) ? 'job-error' : ''));
+      for (const source of last.sources) {
+        const item = node('li', `Вопрос ${source.slot}: ${feedbackLabel(source.feedback)} · ${source.provider || 'провайдер не указан'}`, source.feedback === 'correct' ? 'good' : ['incorrect', 'partiallycorrect'].includes(source.feedback) ? 'job-error' : '');
+        if (source.options?.length) {
+          const options = node('ul');
+          for (const option of source.options) options.append(node('li', `${option.text}: ${feedbackLabel(option.feedback)}`, option.feedback === 'correct' ? 'good' : option.feedback === 'incorrect' ? 'job-error' : 'muted'));
+          item.append(options);
+        }
+        list.append(item);
+      }
       review.append(list); description.append(review);
     }
     if (result.error) description.append(node('code', result.error, 'error-code'));
