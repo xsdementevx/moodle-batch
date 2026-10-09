@@ -271,6 +271,35 @@ test('oversized questions are rejected both first and after a packet split for e
   }
 });
 
+test('Jev strips native matching fields and sends individually oversized questions to Web without stopping other tests', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-large-matching-'));
+  const rows = Array.from({ length: 7 }, (_, i) => {
+    const text = `Row ${i}`;
+    const options = Array.from({ length: 7 }, (_, j) => {
+      const text = `Option ${j} ` + 'A'.repeat(140);
+      return { id: optionId(text), text, nativeValue: 'native-value' };
+    });
+    return { id: digest(['row-v1', text, options.map(o => o.text).sort()]), text, fieldName: 'native-field', options };
+  });
+  const matching = q('2', { type: 'matching', options: [], rows });
+  const packet = jevPacket([matching], 'material');
+  assert.ok(!JSON.stringify(packet.payload).includes('native-field'));
+  assert.ok(!JSON.stringify(packet.payload).includes('native-value'));
+  assert.deepEqual(packet.payload.questions.q1_r0.instructions.matchingRows[6].options, rows[6].options.map(o => o.text));
+  const context = { status: 'ready', text: 'Course material. '.repeat(2000), contextHash: 'large' };
+  let jevCalls = 0, webCalls = 0;
+  try {
+    const solved = await solveTest([q('1'), matching], context, { journalDir: dir,
+      jev: async packet => { jevCalls++; assert.deepEqual(packet.bindings.map(b => b.q.slot), ['1']); return response(packet); },
+      web: async batch => { webCalls++; assert.deepEqual(batch.map(q => q.slot), ['1', '2']); assert.deepEqual(batch[1].rows, rows);
+        return batch.map(q => ({ slot: q.slot, status: 'candidate', answer: q.type === 'matching'
+          ? Object.fromEntries(rows.map(r => [r.id, r.options[0].id])) : [options[0].id] })); }
+    });
+    assert.equal(jevCalls, 1); assert.equal(webCalls, 1);
+    assert.ok(solved.every(q => q.decision.status === 'candidate'));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('context discovery chooses materials preceding the exact test; text extraction caches source hash', async () => {
   const parser = await openParser();
   const dir = await mkdtemp(join(tmpdir(), 'batch-context-'));
