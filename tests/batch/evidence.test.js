@@ -23,6 +23,17 @@ test('evidence requires a real quote from the correct context or an observed and
   assert.equal((await verifyEvidence([decision(web)], questions, contexts, { readSource: async () => { throw new Error(); }, renderSource: null }))[0].status, 'needs_review');
 });
 
+test('PDF discretionary word breaks do not invalidate quotes or merge different numbers', async () => {
+  const quote = 'Учреждались должности судебных следователей, адвокатура.';
+  const decision = { slot: '1', status: 'candidate', sourceUrls: [], evidence: { kind: 'context', quote } };
+  for (const marker of ['\u001f', '\u00ad']) {
+    const context = { text: quote.replace('Учреждались', `Учрежда${marker}лись`) };
+    assert.equal((await verifyEvidence([decision], [{ slot: '1' }], context))[0].evidenceVerified, true);
+    const numeric = { ...decision, evidence: { kind: 'context', quote: 'The verified numeric value is 1234.' } };
+    assert.equal((await verifyEvidence([numeric], [{ slot: '1' }], { text: `The verified numeric value is 12${marker}34.` }))[0].evidenceVerified, false);
+  }
+});
+
 test('JavaScript source rendering is isolated, permits normal same-origin loading and blocks private cross-origin reads', async () => {
   const browser = await chromium.launch();
   let isolated, privateBlocked = false;

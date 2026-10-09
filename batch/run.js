@@ -92,6 +92,7 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
     solved = await (options.solve || solveTest)(questions, { documents },
       { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress });
   } catch (error) {
+    console.error('Moodle Batch solver:', error.name, String(error.message).split('\n')[0].slice(0, 180));
     return [...results, ...prepared.map(p => ({ quizId: p.test.quizId, error }))];
   }
   for (const p of prepared) {

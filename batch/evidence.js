@@ -4,7 +4,8 @@ import { normalize } from './answers.js';
 import { chromium } from 'playwright';
 
 // Whitespace and table delimiters are presentation, not changes to the quoted facts.
-export const evidenceText = text => normalize(String(text).replace(/\\[nr]/gu, ' ').replace(/\s*\|\s*/gu, ' '));
+export const evidenceText = text => normalize(String(text).replace(/(?<=\p{L})[\u001f\u00ad](?=\p{L})/gu, '')
+  .replace(/\\[nr]/gu, ' ').replace(/\s*\|\s*/gu, ' '));
 
 // Runs inside the inert DOM parser, never as page scripts from the source.
 export function sourceText(raw) {
