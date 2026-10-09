@@ -173,6 +173,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
   const check = () => { if (stopped()) throw new Error('STOPPED'); };
   const decisions = new Map(questions.filter(q => q.memory?.status === 'known').map(q => [q.slot, { provider: 'memory', answer: q.memory.answer, status: 'confirmed', verifiedByMoodle: true }]));
   const unresolved = questions.filter(q => q.memory?.status === 'unresolved');
+  if (!unresolved.length) return questions.map(q => ({ ...q, decision: decisions.get(q.slot) || null }));
   const identity = q => `${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`;
   const questionIds = new Set(unresolved.map(identity));
   // Regrouping or changing reasoning must not bypass a previously pending request.

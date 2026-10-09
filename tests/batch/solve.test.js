@@ -10,6 +10,21 @@ import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets
 import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, webSolver } from '../../batch/web.js';
 import { verifyEvidence } from '../../batch/evidence.js';
 
+test('confirmed memory requires neither journal access nor models and leaves conflicts unresolved', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'batch-memory-only-'));
+  const journalDir = join(root, 'unavailable-journals');
+  try {
+    await writeFile(journalDir, 'This is not a journal directory.');
+    const questions = [q('1', { memory: { status: 'known', answer: [options[0].id] } }),
+      q('2', { memory: { status: 'conflict' } }), q('3', { memory: { status: 'unsupported' } })];
+    const result = await solveTest(questions, {}, { journalDir,
+      jev: () => assert.fail('confirmed memory must not call Jev'), web: () => assert.fail('confirmed memory must not call Web') });
+    assert.deepEqual(result[0].decision, { provider: 'memory', answer: [options[0].id], status: 'confirmed', verifiedByMoodle: true });
+    assert.equal(result[1].decision, null);
+    assert.equal(result[2].decision, null);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('person blanks use a surname while explicit full-name requests and non-person terms stay intact', () => {
   const fullName = 'Георгий Константинович Жуков';
   assert.equal(normalizeShortAnswerForQuestion('Маршал, принимавший Парад Победы — ….', fullName, 6), 'Жуков');
