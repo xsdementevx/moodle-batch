@@ -29,12 +29,15 @@ const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(val
 const effortLabel = { Instant: 'Лёгкое размышление', Medium: 'Среднее размышление', High: 'Высокое размышление', instant: 'Лёгкое размышление', medium: 'Среднее размышление', high: 'Высокое размышление' };
 const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
+const feedbackLabel = value => ({ correct: 'Верно', incorrect: 'Неверно', partiallycorrect: 'Частично верно', unconfirmed: 'Результат не раскрыт' }[value] || 'Результат не раскрыт');
 function problemDetails(q) {
   const latest = current?.jobs.slice().reverse().flatMap(job => job.results || []).find(result => result.quizId === q.quizId);
   const code = latest?.error || q.error || q.reviewError;
   return [code ? errors[code] || code : '', q.analysis?.conflict ? `Конфликтов в памяти: ${q.analysis.conflict}` : '',
     q.analysis?.unsupported ? `Неподдерживаемых вопросов: ${q.analysis.unsupported}` : '',
-    ...(latest?.unresolvedQuestions || []).map(item => `Вопрос ${item.slot}: ${reviewReasons[item.reason] || item.reason}`)].filter(Boolean);
+    ...(latest?.unresolvedQuestions || []).map(item => `Вопрос ${item.slot}: ${reviewReasons[item.reason] || item.reason}`),
+    ...(latest?.attempts.at(-1)?.sources || []).filter(item => ['incorrect', 'partiallycorrect'].includes(item.feedback))
+      .map(item => `Вопрос ${item.slot}: ${feedbackLabel(item.feedback)} по проверке Moodle`)].filter(Boolean);
 }
 function matches(q, course) {
   if (issuesOnly && !problemDetails(q).length) return false;
@@ -84,7 +87,7 @@ function eventText(event) {
   return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.round ? `попытка ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : ''].filter(Boolean).join(' · ');
 }
 let jobsSignature = '';
-const reviewReasons = { model_uncertain: 'Модель не уверена в ответе', source_quote_not_found: 'Цитата не найдена в веб-источнике', context_quote_not_found: 'Цитата не найдена в материале', source_not_observed: 'Источник не подтверждён веб-поиском', evidence_incomplete: 'Доказательства покрывают не весь ответ', excluded_answer: 'Этот ответ уже был признан неправильным', conflict: 'Противоречие в памяти ответов', unsupported: 'Тип вопроса пока не поддерживается', unresolved: 'Нет проверенного ответа' };
+const reviewReasons = { source_unavailable: 'Источник не удалось прочитать', evidence_not_supportive: 'Цитата не доказывает выбранный ответ', model_uncertain: 'Модель не уверена в ответе', source_quote_not_found: 'Цитата не найдена в веб-источнике', context_quote_not_found: 'Цитата не найдена в материале', source_not_observed: 'Источник не подтверждён веб-поиском', evidence_incomplete: 'Доказательства покрывают не весь ответ', excluded_answer: 'Этот ответ уже был признан неправильным', conflict: 'Противоречие в памяти ответов', unsupported: 'Тип вопроса пока не поддерживается', unresolved: 'Нет проверенного ответа' };
 function sourceSummary(attempt) {
   const sources = attempt?.sources || [];
   return [['memory', 'Память'], ['jev', 'Jev'], ['gpt_web', 'GPT Web']].map(([provider, label]) => sources.some(s => s.provider === provider) ? `${label}: ${sources.filter(s => s.provider === provider).length}` : '').filter(Boolean).join(' · ');
@@ -99,7 +102,7 @@ function reportFor(job) {
     for (const question of result.unresolvedQuestions || []) lines.push(`  Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
-      for (const source of attempt.sources || []) lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${source.feedback || 'не раскрыто'}`);
+      for (const source of attempt.sources || []) lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${feedbackLabel(source.feedback)}`);
     }
   }
   lines.push('', 'ЭТАПЫ (по времени)');
@@ -140,6 +143,12 @@ function showJobs(force = false) {
     const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток: ${result.attempts.length}`);
     for (const question of result.unresolvedQuestions || []) description.append(node('small', `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}`, 'quiz-meta'));
     if (sourceSummary(last)) description.append(node('small', sourceSummary(last), 'quiz-meta'));
+    if (last?.sources?.length) {
+      const review = node('details'); review.append(node('summary', 'Проверка каждого вопроса Moodle'));
+      const list = node('ul');
+      for (const source of last.sources) list.append(node('li', `Вопрос ${source.slot}: ${feedbackLabel(source.feedback)} · ${source.provider || 'провайдер не указан'}`, source.feedback === 'correct' ? 'good' : ['incorrect', 'partiallycorrect'].includes(source.feedback) ? 'job-error' : ''));
+      review.append(list); description.append(review);
+    }
     if (result.error) description.append(node('code', result.error, 'error-code'));
     if (last?.reviewUrl) { try { const url = new URL(last.reviewUrl); if (url.origin === current.origin && url.pathname === '/mod/quiz/review.php') { const review = node('a', ' Результат Moodle ↗'); review.href = url.href; review.target = '_blank'; review.rel = 'noopener'; description.append(review); } } catch { /* malformed link */ } }
     row.append(test, node('td', status, result.error ? 'job-error' : last?.percent === 100 ? 'good' : ''), node('td', Number.isFinite(last?.percent) ? `${last.percent}%` : '—'), description); body.append(row);

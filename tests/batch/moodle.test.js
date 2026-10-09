@@ -31,6 +31,10 @@ test('cookie exports are normalized locally and unrelated host cookies are exclu
   assert.equal(state.cookies.length, 1);
   assert.equal(state.cookies[0].sameSite, 'None');
   assert.equal(state.cookies[0].expires, 9999999999);
+  const scoped = cookieState([{ ...cookie, domain: '.moodle.example' }, { ...cookie, domain: '.other.example' }], 'https://sdo.moodle.example');
+  assert.equal(scoped.cookies.length, 1, 'parent-domain cookies apply to the Moodle subdomain');
+  assert.equal(scoped.cookies[0].domain, '.moodle.example');
+  assert.throws(() => cookieState([{ ...cookie, domain: '.moodle.example' }], 'https://evil-moodle.example'), /INVALID_COOKIE_FILE/);
   assert.throws(() => cookieState({}, 'https://moodle.example'), /INVALID_COOKIE_FILE/);
 });
 

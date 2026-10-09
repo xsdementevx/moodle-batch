@@ -55,7 +55,9 @@ export async function readPublicSource(href) {
       const material = await extractMaterial({ buffer, mime: 'application/pdf' }, join(tmpdir(), 'moodle-batch-public-pdf'));
       return { text: material.text, format: 'pdf' };
     }
-    return buffer.toString('utf8');
+    const html = buffer.toString('utf8');
+    if (/<title[^>]*>\s*(?:check failed|just a moment|verify you are human)/iu.test(html)) throw new Error('SOURCE_UNAVAILABLE');
+    return html;
   }
   throw new Error('SOURCE_UNAVAILABLE');
 }
@@ -93,6 +95,7 @@ export async function verifyEvidence(decisions, questions, context, { readSource
   renderSource = readRenderedSource, textFromHtml } = {}) {
   const pages = new Map();
   const pdfs = new Set();
+  const unavailable = new Set();
   const results = [];
   async function verifyOne(evidence, decision, question) {
     let grounded = false;
@@ -107,7 +110,7 @@ export async function verifyEvidence(decisions, questions, context, { readSource
             const raw = await readSource(evidence.url);
             if (raw?.format === 'pdf') { pdfs.add(evidence.url); return evidenceText(raw.text); }
             return evidenceText(textFromHtml ? await textFromHtml(raw) : raw);
-          } catch { return ''; }
+          } catch { unavailable.add(evidence.url); return ''; }
         })());
         const needle = evidenceText(evidence.quote);
         grounded = (await pages.get(evidence.url)).includes(needle);
@@ -116,8 +119,9 @@ export async function verifyEvidence(decisions, questions, context, { readSource
           if (!pages.has(renderKey)) pages.set(renderKey, (async () => {
             try {
               const raw = await renderSource(evidence.url, evidence.quote);
+              unavailable.delete(evidence.url);
               return evidenceText(textFromHtml ? await textFromHtml(raw) : raw);
-            } catch { return ''; }
+            } catch { unavailable.add(evidence.url); return ''; }
           })());
           grounded = (await pages.get(renderKey)).includes(needle);
         }
@@ -125,11 +129,13 @@ export async function verifyEvidence(decisions, questions, context, { readSource
     }
     return { grounded, reason: decision.status !== 'candidate' ? 'model_uncertain'
         : evidence?.kind === 'context' ? 'context_quote_not_found'
-        : !decision.sourceUrls.includes(evidence?.url) ? 'source_not_observed' : 'source_quote_not_found' };
+        : !decision.sourceUrls.includes(evidence?.url) ? 'source_not_observed'
+        : unavailable.has(evidence.url) ? 'source_unavailable' : 'source_quote_not_found' };
   }
   for (const decision of decisions) {
     const question = questions.find(q => q.slot === decision.slot);
     const evidence = Array.isArray(decision.evidence) ? decision.evidence : [decision.evidence];
+    const verified = [], rejected = [];
     let grounded = false, reason = decision.status === 'candidate' ? 'evidence_incomplete' : 'model_uncertain';
     if (evidence.length && evidence.length <= 32 && question) {
       const array = Array.isArray(decision.evidence);
@@ -142,11 +148,17 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         grounded = true;
         for (const item of evidence) {
           const check = await verifyOne(item, decision, question);
-          if (!check.grounded) { grounded = false; reason = check.reason; break; }
+          if (check.grounded) verified.push(item);
+          else { grounded = false; reason = check.reason; rejected.push({ ...item, reason: check.reason }); }
+        }
+        if (array && field && decision.status === 'candidate') {
+          const supported = new Set(verified.flatMap(item => item[field]));
+          grounded = required.length > 0 && required.every(id => supported.has(id));
         }
       }
     }
     results.push({ ...decision, evidenceVerified: grounded,
+      ...(grounded && rejected.length ? { evidence: verified, rejectedEvidence: rejected } : {}),
       reviewReason: grounded ? undefined : decision.reviewReason || reason,
       status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status });
   }

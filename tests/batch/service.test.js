@@ -252,7 +252,9 @@ test('installed extension recovers a lost start reply after reopening without ch
     await reopened.locator('#copy-report').click();
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Moodle Batch — отчёт запуска/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Тест 20/);
-    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: correct/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
+    await reopened.getByText('Проверка каждого вопроса Moodle', { exact: true }).click();
+    assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);
     await reopened.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; });
     await reopened.locator('#copy-report').click();
     assert.equal(await reopened.locator('#log-export').isVisible(), true);

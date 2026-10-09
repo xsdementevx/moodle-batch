@@ -20,7 +20,11 @@ test('evidence requires a real quote from the correct context or an observed and
   assert.equal(reads, 1);
   assert.equal((await verifyEvidence([decision({ ...web, url: 'https://invented.example/' })], questions, contexts, { readSource }))[0].status, 'needs_review');
   assert.equal(reads, 1, 'unobserved URLs must not be read');
-  assert.equal((await verifyEvidence([decision(web)], questions, contexts, { readSource: async () => { throw new Error(); }, renderSource: null }))[0].status, 'needs_review');
+  const unreadable = (await verifyEvidence([decision(web)], questions, contexts, { readSource: async () => { throw new Error(); }, renderSource: null }))[0];
+  assert.equal(unreadable.status, 'needs_review');
+  assert.equal(unreadable.reviewReason, 'source_unavailable');
+  const absent = (await verifyEvidence([decision(web)], questions, contexts, { readSource: async () => 'A readable page with different facts.', renderSource: null }))[0];
+  assert.equal(absent.reviewReason, 'source_quote_not_found');
 });
 
 test('PDF discretionary word breaks do not invalidate quotes or merge different numbers', async () => {
@@ -65,6 +69,27 @@ test('multiple source quotes must all be observed, exact and cover every matchin
   const mapped = evidence.map(({ rowIds, ...item }, i) => ({ ...item, optionIds: [`o${i + 1}`] }));
   assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: mapped }], [multiple], {}, options))[0].evidenceVerified, true);
   assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: [mapped[0]] }], [multiple], {}, options))[0].reviewReason, 'evidence_incomplete');
+});
+
+test('a rejected duplicate cannot block complete verified coverage or fill a missing answer', async () => {
+  const quote = 'The course explicitly establishes the first and second selected claims.';
+  const good = { kind: 'context', quote, optionIds: ['one', 'two'] };
+  const bad = { kind: 'web', url: 'https://source.example/blocked', quote: 'A duplicate quote from an unreadable external source.', optionIds: ['one'] };
+  const question = { slot: '1', type: 'multiple' };
+  const decision = { slot: '1', status: 'candidate', answer: ['one', 'two'], sourceUrls: [bad.url], evidence: [bad, good] };
+  const options = { readSource: async () => { throw new Error('SOURCE_UNAVAILABLE'); }, renderSource: null };
+  const result = (await verifyEvidence([decision], [question], { text: quote }, options))[0];
+  assert.equal(result.status, 'candidate');
+  assert.deepEqual(result.evidence, [good]);
+  assert.equal(result.rejectedEvidence[0].reason, 'source_unavailable');
+  const missing = { ...decision, evidence: [bad, { ...good, optionIds: ['two'] }] };
+  assert.equal((await verifyEvidence([missing], [question], { text: quote }, options))[0].status, 'needs_review');
+  const foreign = { ...decision, evidence: [good, { ...bad, optionIds: ['foreign'] }] };
+  assert.equal((await verifyEvidence([foreign], [question], { text: quote }, options))[0].status, 'needs_review');
+  const matching = { slot: '1', type: 'matching', rows: [{ id: 'one' }, { id: 'two' }] };
+  const pairs = { ...decision, answer: { one: 'o1', two: 'o2' }, evidence: [
+    { ...good, rowIds: good.optionIds }, { ...bad, rowIds: bad.optionIds }] };
+  assert.equal((await verifyEvidence([pairs], [matching], { text: quote }, options))[0].status, 'candidate');
 });
 
 test('JavaScript source rendering is isolated, permits normal same-origin loading and blocks private cross-origin reads', async () => {

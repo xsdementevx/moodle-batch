@@ -8,7 +8,8 @@ export function cookieState(raw, origin) {
   const cookies = Array.isArray(raw) ? raw : raw?.cookies;
   if (!Array.isArray(cookies)) throw new Error('INVALID_COOKIE_FILE');
   const sameSite = { no_restriction: 'None', lax: 'Lax', strict: 'Strict', unspecified: 'Lax' };
-  const selected = cookies.filter(c => c.domain?.replace(/^\./u, '') === host).map(c => ({
+  const selected = cookies.filter(c => c.domain?.replace(/^\./u, '') === host
+    || (c.domain?.startsWith('.') && host.endsWith(c.domain))).map(c => ({
     name: c.name, value: c.value, domain: c.domain, path: c.path || '/',
     expires: c.expires ?? c.expirationDate ?? -1,
     httpOnly: Boolean(c.httpOnly), secure: Boolean(c.secure),
