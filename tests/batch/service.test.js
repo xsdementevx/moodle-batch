@@ -181,7 +181,9 @@ test('installed extension recovers a lost start reply after reopening without ch
     context = await chromium.launchPersistentContext(join(root, 'profile'), { channel: 'chromium', headless: true,
       args: [`--disable-extensions-except=${dir}`, `--load-extension=${dir}`] });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
-    await context.route(`${scope.origin}/**`, route => route.fulfill({ contentType: 'text/html', body: '<body><div class="usermenu"><a href="/user/profile.php?id=42">Profile</a></div><main id="region-main"><form id="responseform"><input value="unchanged"></form></main></body>' }));
+    await context.route(`${scope.origin}/**`, route => route.fulfill({ contentType: 'text/html', body: new URL(route.request().url()).pathname === '/user/profile.php'
+      ? '<body id="page-user-profile"><main id="region-main"><div data-userid="42"></div></main></body>'
+      : '<body><div class="usermenu"><a href="/user/profile.php">Profile</a></div><main id="region-main"><form id="responseform"><input value="unchanged"></form></main></body>' }));
     const page = await context.newPage(); await page.goto(`${scope.origin}/mod/quiz/view.php?id=20`);
     const opened = context.waitForEvent('page');
     await page.locator('#moodle-batch-open').click();
