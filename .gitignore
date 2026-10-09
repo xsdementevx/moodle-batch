@@ -1,0 +1,19 @@
+# Local credentials and private configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Browser profiles, recordings and local test output
+.playwright-mcp/
+browser-data/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Generated or recoverable files
+node_modules/
+dist/
+coverage/
+docs/execution-backups/

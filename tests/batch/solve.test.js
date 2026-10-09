@@ -1,0 +1,325 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { optionId, digest, questionKey } from '../../batch/answers.js';
+import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
+import { checkpointed, jevPacket, parseJev, questionPackets, solveTest } from '../../batch/solve.js';
+import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, webSolver } from '../../batch/web.js';
+import { closeExtensionTabs } from '../../batch/extension.js';
+import { chromium } from 'playwright';
+import { extractMaterial, loadContext } from '../../batch/context.js';
+import { openParser } from '../../batch/moodle.js';
+
+const options = ['Alpha', 'Beta'].map(text => ({ id: optionId(text), text }));
+const q = (slot, extra = {}) => ({ origin: 'https://moodle.example', userScope: 'u1', courseId: '10', quizId: '20', attemptId: '30', slot,
+  type: 'choice', text: 'Which sample?', options, rows: [], memory: { status: 'unresolved', excludedAnswers: [] }, ...extra });
+const response = (packet, choice = 'o0') => ({ model: 'jev-1.13.0', answers: Object.fromEntries(Object.entries(packet.payload.questions).map(([id, spec]) => [id,
+  { type: 'choice', choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(spec.criteria).map(key => [key, key === choice ? 1 : 0])) }])) });
+
+test('legacy short-answer wording rules preserve source words, strip repeated units, and enforce exclusions after normalization', () => {
+  const question = q('1', { type: 'text', textFormat: 'shortanswer', text: 'Длительные свидания продолжительностью … суток', options: [] });
+  assert.equal(normalizeShortAnswerForQuestion(question.text, 'трое суток'), 'трое');
+  assert.equal(normalizeShortAnswerForQuestion(question.text, '3'), '3');
+  assert.equal(normalizeShortAnswerForQuestion('Может ли работник отказаться?', 'Да, может'), 'да');
+  assert.equal(normalizeShortAnswerForQuestion('Срок от … до … лет', 'от 2 до 5 лет'), '2 до 5');
+  assert.equal(normalizeShortAnswerForQuestion('В течение …', '1 года'), 'одного года');
+  const payload = answer => JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer, needsReview: false, sourceUrls: ['https://source.example/one'] }] });
+  const answer = parseWeb(payload('трое суток'), [question], 'nonce', ['https://source.example/one'])[0];
+  assert.equal(answer.answer, 'трое');
+  assert.equal(answer.rawAnswer, 'трое суток');
+  assert.equal(parseWeb(payload('3'), [{ ...question, textFormat: 'numerical' }], 'nonce', ['https://source.example/one'])[0].answer, '3');
+  assert.throws(() => parseWeb(payload('трое суток'), [{ ...question, memory: { excludedAnswers: ['трое'] } }], 'nonce', ['https://source.example/one']), /EXCLUDED_WEB_ANSWER/);
+  assert.ok(webPrompt([question], { text: '' }, 'nonce').includes('не заменяй словесное число цифрой'));
+});
+
+test('updated wording policy does not resend pending legacy web packets or alter confirmed memory', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-wording-'));
+  try {
+    const question = q('1', { type: 'text', text: 'Продолжительностью … суток', options: [] });
+    const context = { text: '', status: 'missing', contextHash: null };
+    const legacyId = digest(['web-packet-v1', [[question.attemptId, question.slot, questionKey(question)]], null]);
+    await writeFile(join(dir, `${legacyId}.json`), JSON.stringify({ state: 'pending' }));
+    await assert.rejects(solveTest([question], context, { journalDir: dir, web: () => assert.fail('must not resend') }), /UNKNOWN_MODEL_OUTCOME/);
+    const known = { ...question, memory: { status: 'known', answer: 'трое суток', excludedAnswers: [] } };
+    const result = await solveTest([known], context, { journalDir: dir, web: () => assert.fail('known answer') });
+    assert.equal(result[0].decision.answer, 'трое суток');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('status cleanup closes only Moodle Batch extension pages', async () => {
+  const base = 'chrome-extension://mmlmfjhmonkocbjadbfplnigmagldckm/connect.html';
+  const tabs = ['Moodle Batch', 'Other client'].map((name, i) => ({ id: i + 1, url: `${base}?client=${encodeURIComponent(JSON.stringify({ name }))}` }));
+  tabs.push({ id: 3, url: `${base}?client=invalid` });
+  let removed;
+  const page = { url: () => tabs[0].url, evaluate: fn => runInNewContext(`(${fn.toString()})()`, {
+    URL, chrome: { tabs: { query: async () => tabs, remove: async ids => { removed = Array.from(ids); } } },
+  }) };
+  await closeExtensionTabs({ contexts: () => [{ pages: () => [page] }] });
+  assert.deepEqual(removed, [1]);
+});
+
+test('conversation parser validates identity, final answer and actual web tool evidence; completed journal opens no browser', async () => {
+  const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/one'] }] };
+  const messages = [{ role: 'user', text: 'requestId nonce' }, { role: 'assistant', endTurn: false },
+    { role: 'tool', toolName: 'web.run', sources: result.answers[0].sourceUrls },
+    { role: 'assistant', endTurn: true, text: `<escape>${JSON.stringify(result)}</escape>` }];
+  const answers = parseConversation(messages, [q('1')], 'nonce');
+  assert.equal(answers[0].status, 'candidate');
+  assert.equal(answers[0].searchObserved, true);
+  assert.equal(parseConversation(messages.filter(m => m.role !== 'tool'), [q('1')], 'nonce')[0].status, 'needs_review');
+  assert.throws(() => parseConversation(messages, [q('1')], 'foreign'), /FOREIGN_CONVERSATION/);
+  assert.throws(() => parseConversation([...messages, messages[3]], [q('1')], 'nonce'), /FOREIGN_CONVERSATION/);
+  const dir = await mkdtemp(join(tmpdir(), 'batch-completed-web-'));
+  try {
+    const journalPath = join(dir, 'web.json');
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { answers } }));
+    const solve = webSolver({ extension: true, connect: () => assert.fail('completed request must not connect') });
+    assert.deepEqual(await solve([q('1')], {}, { journalPath }), answers);
+    await solve.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('extension reuses one attachment, closes its own pages and detaches without closing the personal context', async () => {
+  const events = [];
+  const solve = webSolver({ extension: true, connect: async () => {
+    events.push('connect');
+    return { contexts: () => [{ newPage: async () => ({
+      goto: async () => { throw new Error('FIXTURE_NAVIGATION_FAILURE'); },
+      close: async () => events.push('own-page-close'),
+    }), close: async () => assert.fail('personal context must remain open') }], close: async () => events.push('detach') };
+  } });
+  const journal = join(tmpdir(), `batch-extension-${crypto.randomUUID()}.json`);
+  for (let i = 0; i < 2; i++) await assert.rejects(solve([], {}, { journalPath: journal }), /FIXTURE_NAVIGATION_FAILURE/u);
+  await solve.close();
+  assert.deepEqual(events, ['connect', 'own-page-close', 'own-page-close', 'detach']);
+});
+
+test('extension reconnects a missing or detached context before dispatch and never retries a pending packet', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-reconnect-'));
+  let connects = 0, disconnected = false;
+  const detached = [];
+  const solve = webSolver({ extension: true, connect: async () => {
+    const id = ++connects;
+    return { isConnected: () => id !== 2 || !disconnected,
+      contexts: () => id === 1 ? [] : [{ newPage: async () => ({
+        goto: async () => { throw new Error('FIXTURE_BEFORE_DISPATCH'); }, close: async () => {},
+      }), close: () => assert.fail('must not close the personal context') }],
+      close: async () => detached.push(id) };
+  } });
+  try {
+    const journalPath = join(dir, 'web.json');
+    await assert.rejects(solve([], {}, { journalPath }), /FIXTURE_BEFORE_DISPATCH/);
+    assert.equal(connects, 2); // The first connection supplied no context.
+    disconnected = true;
+    await assert.rejects(solve([], {}, { journalPath }), /FIXTURE_BEFORE_DISPATCH/);
+    assert.equal(connects, 3);
+    await writeFile(journalPath, JSON.stringify({ state: 'pending' }));
+    await assert.rejects(solve([], {}, { journalPath }), /UNKNOWN_MODEL_OUTCOME/);
+    assert.equal(connects, 3);
+  } finally { await solve.close(); await rm(dir, { recursive: true, force: true }); }
+  assert.deepEqual(detached, [1, 2, 3]);
+});
+
+test('Jev rejects incomplete probabilities, insufficient context, partial multiple and excluded answers', () => {
+  const question = q('1');
+  const packet = jevPacket([question], 'Context');
+  assert.deepEqual(parseJev(packet, response(packet)).get('1').answer, [options[0].id]);
+  assert.equal(parseJev(packet, response(packet, 'insufficient_context')).size, 0);
+  const bad = response(packet); bad.answers.q1.probabilities = { o0: 1 };
+  assert.equal(parseJev(packet, bad).size, 0);
+  const excluded = jevPacket([q('1', { memory: { status: 'unresolved', excludedAnswers: [[options[0].id]] } })], 'Context');
+  assert.equal(parseJev(excluded, response(excluded)).size, 0);
+  const multi = jevPacket([q('1', { type: 'multiple' })], 'Context');
+  const raw = { model: 'jev-1.13.0', answers: { q1_o0: { type: 'noul', noul: 0.99 }, q1_o1: { type: 'noul', noul: 0.5 } } };
+  assert.equal(parseJev(multi, raw).size, 0);
+  raw.answers.q1_o1.noul = 0.01;
+  assert.deepEqual(parseJev(multi, raw).get('1').answer, [options[0].id]);
+  const duplicate = jevPacket([q('1', { options: [options[0], options[0], options[1]] })], 'Context');
+  assert.equal(parseJev(duplicate, response(duplicate, 'o0')).size, 0);
+  assert.deepEqual(parseJev(duplicate, response(duplicate, 'o2')).get('1').answer, [options[1].id]);
+});
+
+test('cascade skips known answers, forwards only unresolved and reuses dispatch checkpoint', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-cascade-'));
+  try {
+    const questions = [q('1', { memory: { status: 'known', answer: [options[1].id], excludedAnswers: [] } }), q('2'), q('3', { type: 'text', options: [] })];
+    let jevCalls = 0;
+    const jev = async packet => { jevCalls++; assert.equal(packet.bindings.length, 1); return response(packet); };
+    const web = async batch => { assert.deepEqual(batch.map(q => q.slot), ['2', '3']);
+      return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: q.type === 'text' ? 'term' : [options[0].id], status: 'candidate' })); };
+    const context = { status: 'ready', text: 'Sample context. '.repeat(20), contextHash: 'test-context' };
+    const result = await solveTest(questions, context, { journalDir: dir, jev, web });
+    assert.deepEqual(result.map(q => q.decision.provider), ['memory', 'jev', 'gpt_web']);
+    await solveTest(questions, context, { journalDir: dir, jev, web });
+    assert.equal(jevCalls, 1);
+    await solveTest([q('4')], { status: 'missing', text: '', contextHash: null }, { journalDir: dir, jev: () => assert.fail('no context'), web: async batch => [{ slot: batch[0].slot, answer: null, status: 'needs_review' }] });
+    let dispatches = 0;
+    const path = join(dir, 'unknown.json');
+    await assert.rejects(checkpointed(path, async () => { dispatches++; throw new Error('timeout'); }), /timeout/);
+    await assert.rejects(checkpointed(path, async () => { dispatches++; }), /UNKNOWN_MODEL_OUTCOME/);
+    assert.equal(dispatches, 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('Web validates request identity, coverage, answers and observed source links', async () => {
+  const question = q('1');
+  const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[1].id], needsReview: false, sourceUrls: ['https://source.example/one'] }] };
+  assert.equal(parseWeb(JSON.stringify(result), [question], 'nonce', result.answers[0].sourceUrls)[0].status, 'candidate');
+  assert.equal(parseWeb(JSON.stringify(result), [question], 'nonce', [])[0].status, 'needs_review');
+  assert.throws(() => parseWeb(JSON.stringify(result), [question], 'different', []), /INCOMPLETE_WEB_RESPONSE/);
+  assert.throws(() => parseWeb(JSON.stringify(result), [q('1', { memory: { excludedAnswers: [[options[1].id]] } })], 'nonce', []), /EXCLUDED_WEB_ANSWER/);
+  assert.ok(!webPrompt([question], { text: '' }, 'nonce').includes('sequencecheck'));
+  await assert.rejects(readyWeb({ title: async () => 'Just a moment...' }), /GPT_WEB_CHALLENGE/);
+});
+
+test('web verification revisits only needs_review questions and reuses escalation journals', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-verify-'));
+  const questions = [q('1'), q('2')];
+  const context = { status: 'missing', text: '', contextHash: null };
+  const calls = [];
+  const web = (batch, context, options) => checkpointed(options.journalPath, async () => {
+    calls.push(batch.map(q => q.slot));
+    return batch.map(question => ({ slot: question.slot, provider: 'gpt_web', answer: [question.options[0].id],
+      status: question.slot === '1' && !Object.hasOwn(question, 'previousUnverifiedAnswer') ? 'needs_review' : 'candidate' }));
+  });
+  try {
+    const result = await solveTest(questions, context, { journalDir: dir, web });
+    assert.deepEqual(calls, [['1', '2'], ['1']]);
+    assert.deepEqual(result.map(q => q.decision.status), ['candidate', 'candidate']);
+    await solveTest(questions, context, { journalDir: dir, web });
+    assert.equal(calls.length, 2);
+    let attempts = 0;
+    await solveTest([q('3')], context, { journalDir: dir, web: async batch => {
+      attempts++; return batch.map(q => ({ slot: q.slot, answer: null, status: 'needs_review' }));
+    } });
+    assert.equal(attempts, 3, 'Instant, Medium and High are bounded when no reliable answer exists');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('shared packets preserve test context, avoid slot collisions, and escalate only uncertain questions in the same conversation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-shared-'));
+  const contexts = { documents: { first: { status: 'ready', text: 'Alpha lecture. '.repeat(20), contextHash: 'alpha' },
+    second: { status: 'ready', text: 'Beta lecture. '.repeat(20), contextHash: 'beta' } } };
+  const questions = [q('20:30:1', { nativeSlot: '1', contextId: 'first' }),
+    q('21:31:1', { nativeSlot: '1', quizId: '21', attemptId: '31', contextId: 'second', memory: { status: 'unresolved', excludedAnswers: [[options[0].id]] } })];
+  let jevCalls = 0;
+  const calls = [];
+  try {
+    const result = await solveTest(questions, contexts, { journalDir: dir,
+      jev: async packet => { jevCalls++; assert.equal(packet.bindings.length, 2);
+        assert.equal(packet.payload.questions.q1.instructions.contextId, 'first');
+        assert.equal(packet.payload.questions.q2.instructions.contextId, 'second');
+        return response(packet); },
+      web: async (batch, context, opts) => {
+        calls.push({ slots: batch.map(q => q.slot), reasoning: opts.reasoning, parents: opts.parentRequestId, id: opts.requestId });
+        const prompt = JSON.parse(webPrompt(batch, context, opts.requestId).split('\n').at(-1));
+        assert.equal(prompt.contexts.first, contexts.documents.first.text);
+        assert.equal(prompt.contexts.second, contexts.documents.second.text);
+        return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: [options[q.quizId === '20' ? 0 : 1].id],
+          status: q.quizId === '21' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate', conversationUrl: 'https://chatgpt.com/c/synthetic' }));
+      } });
+    assert.equal(jevCalls, 1);
+    assert.deepEqual(calls.map(c => c.slots), [['20:30:1', '21:31:1'], ['21:31:1'], ['21:31:1']]);
+    assert.deepEqual(calls.map(c => c.reasoning), ['instant', 'medium', 'high']);
+    assert.deepEqual(calls[2].parents, [calls[0].id, calls[1].id]);
+    assert.deepEqual(result.map(q => q.decision.answer), [[options[0].id], [options[1].id]]);
+    assert.equal(result[0].decision.provider, 'jev');
+    const pending = join(dir, `${'a'.repeat(64)}.json`);
+    await writeFile(pending, JSON.stringify({ state: 'pending', questionIds: ['21:31:1'] }));
+    await assert.rejects(solveTest(questions.slice(1), contexts, { journalDir: dir, web: () => assert.fail('regrouped pending request') }), /UNKNOWN_MODEL_OUTCOME/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('packets split large distinct contexts instead of mixing or silently truncating them to tiny excerpts', () => {
+  const questions = Array.from({ length: 3 }, (_, i) => q(String(i), { contextId: String(i) }));
+  const context = { documents: Object.fromEntries(questions.map(q => [q.contextId, { text: 'A'.repeat(60000) }])) };
+  assert.deepEqual(questionPackets(questions, context).map(b => b.length), [1, 1, 1]);
+  const shared = questions.map(q => ({ ...q, contextId: '0' }));
+  assert.equal(questionPackets(shared, context).length, 1);
+});
+
+test('context discovery chooses materials preceding the exact test; text extraction caches source hash', async () => {
+  const parser = await openParser();
+  const dir = await mkdtemp(join(tmpdir(), 'batch-context-'));
+  try {
+    const html = '<body id="page-course-view-topics" class="course-10"><li class="section"><div class="activity"><a href="/mod/resource/view.php?id=7">Lesson</a></div><div class="activity"><a href="/mod/quiz/view.php?id=20">Quiz</a></div><div class="activity"><a href="/mod/resource/view.php?id=8">Next lesson</a></div><div class="activity"><a href="/mod/quiz/view.php?id=21">Next quiz</a></div></li></body>';
+    const refs = await parser.materials(html, 'https://moodle.example', '10', '20');
+    assert.deepEqual(refs.map(r => new URL(r.url).searchParams.get('id')), ['7']);
+    assert.deepEqual((await parser.quizzes(html, 'https://moodle.example', '10')).map(q => q.quizId), ['20', '21']);
+    const material = { buffer: Buffer.from('Useful lecture text. '.repeat(20)), mime: 'text/plain', title: 'Lesson' };
+    const first = await extractMaterial(material, dir);
+    assert.equal(first.cacheHit, false);
+    assert.equal((await extractMaterial(material, dir)).cacheHit, true);
+    const changed = await extractMaterial({ ...material, buffer: Buffer.from('Different lecture. '.repeat(20)) }, dir);
+    assert.notEqual(changed.contentHash, first.contentHash);
+    const context = await loadContext({ materials: async () => refs, downloadMaterial: async () => material }, { origin: 'https://moodle.example', userScope: 'u1', courseId: '10' }, dir);
+    assert.equal(context.status, 'ready');
+    assert.equal((await loadContext({ materials: async () => refs, downloadMaterial: async () => { throw new Error(); } }, {}, dir)).status, 'missing');
+  } finally { await parser.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('Web dispatch on a synthetic page sends once and reads completed JSON with citations', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-web-'));
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await context.route('https://chatgpt.com/**', route => route.fulfill({ contentType: 'text/html', body: `<title>ChatGPT fixture</title>
+      <div role="textbox" contenteditable="true"></div><button data-testid="composer-plus-btn" onclick="document.querySelector('[role=menuitem]').hidden=false">Tools</button>
+      <button role="menuitem" hidden onclick="this.hidden=true">Search the web</button>
+      <button data-testid="send-button" onclick="send()">Send</button><script>
+      window.dispatches=0;
+      function send(){window.dispatches++;const text=document.querySelector('[role=textbox]').innerText;const id=/requestId[^a-zA-Z0-9]+([a-zA-Z0-9]+)/.exec(text)[1];
+      const user=document.createElement('div');user.dataset.messageAuthorRole='user';user.textContent=text;document.body.append(user);
+      const assistant=document.createElement('div');assistant.dataset.messageAuthorRole='assistant';
+      const pre=document.createElement('pre');const code=document.createElement('code');code.textContent=JSON.stringify({requestId:id,answers:[{slot:'1',answer:['${options[0].id}'],needsReview:false,evidence:{kind:'context',quote:'Sample material supports Alpha.'},sourceUrls:['https://source.example/one']}]});pre.append(code);assistant.append(pre);
+      const source=document.createElement('a');source.href='https://source.example/one';source.textContent='Source';assistant.append(source);document.body.append(assistant);
+      const copy=document.createElement('button');copy.dataset.testid='copy-turn-action-button';document.body.append(copy);}
+      </script>` }));
+    await page.goto('https://chatgpt.com/');
+    const material = { text: 'Sample material supports Alpha.' };
+    const answer = await dispatchWeb(page, [q('1')], material, { requestId: 'nonce', journalPath: join(dir, 'web.json'), reasoning: 'current' });
+    assert.equal(answer[0].status, 'candidate');
+    assert.equal(await page.evaluate(() => window.dispatches), 1);
+    for (const [id, parents] of [['second', ['nonce']], ['third', ['nonce', 'second']]]) {
+      await page.locator('[role="textbox"]').fill('');
+      const followup = await dispatchWeb(page, [q('1')], material, { requestId: id,
+        parentRequestId: parents, journalPath: join(dir, `${id}.json`), reasoning: 'current' });
+      assert.equal(followup[0].evidenceVerified, true);
+    }
+    assert.equal(await page.evaluate(() => window.dispatches), 3);
+  } finally { await browser.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('reasoning selector changes Instant to verified High and rejects a menu that cannot provide it', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<button aria-label="Выбрать модель ChatGPT" onclick="document.querySelector('[role=menu]').hidden=false">Уровень усилий рассужденияInstant</button>
+      <div role="menu" hidden><span role="status">Instant, 1 из 3.</span>
+      <div data-reasoning-slider="true" tabindex="0" style="width:200px;height:24px"><span role="slider" aria-valuenow="0" aria-valuemax="2"></span></div></div>
+      <script>window.keys=0;window.levels=['Instant','Medium','High'];
+      document.addEventListener('keydown',e=>{if(e.key==='Escape'){document.querySelector('[role=menu]').hidden=true;return;}
+      if(!['ArrowRight','ArrowLeft'].includes(e.key))return;window.keys++;
+      const t=document.querySelector('[role=slider]');let n=Math.max(0,Math.min(Number(t.getAttribute('aria-valuemax')),Number(t.getAttribute('aria-valuenow'))+(e.key==='ArrowRight'?1:-1)));
+      t.setAttribute('aria-valuenow',String(n));document.querySelector('[role=status]').textContent=window.levels[n]+', '+(n+1)+' из 3.';
+      document.querySelector('button').textContent='Уровень усилий рассуждения'+window.levels[n];});</script>`);
+    assert.equal(await selectWebReasoning(page), 'High');
+    assert.equal(await page.locator('button').textContent(), 'Уровень усилий рассужденияHigh');
+    assert.equal(await page.evaluate(() => window.keys), 2);
+    assert.equal(await selectWebReasoning(page, 'instant'), 'Instant');
+    assert.equal(await selectWebReasoning(page, 'medium'), 'Medium');
+    assert.equal(await selectWebReasoning(page), 'High');
+    assert.equal(await selectWebReasoning(page), 'High');
+    assert.equal(await page.evaluate(() => window.keys), 6);
+    await page.evaluate(() => {
+      document.querySelector('[role=slider]').setAttribute('aria-valuenow', '0');
+      document.querySelector('[role=slider]').setAttribute('aria-valuemax', '1');
+      document.querySelector('[role=status]').textContent = 'Instant, 1 из 2.';
+    });
+    await assert.rejects(selectWebReasoning(page), /GPT_WEB_REASONING_UNAVAILABLE/);
+  } finally { await browser.close(); }
+});

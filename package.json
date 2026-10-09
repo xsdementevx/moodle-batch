@@ -1,0 +1,16 @@
+{
+  "name": "moodle-batch",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "batch": "node batch/cli.js",
+    "batch:gpt-login": "node batch/gpt-login.js",
+    "batch:overview": "node batch/overview-cli.js",
+    "batch:serve": "node batch/service-cli.js",
+    "test:batch": "node --test tests/batch/*.test.js",
+    "test": "node --test tests/batch/*.test.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}

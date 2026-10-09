@@ -1,0 +1,121 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { digest, openAnswers, optionId, questionKey, answerSignature } from '../../batch/answers.js';
+
+const options = ['Alpha', 'Beta', 'Gamma'].map(text => ({ text, id: optionId(text) }));
+const question = (extra = {}) => ({ origin: 'https://moodle.example', userScope: 'u1', courseId: '10', quizId: '20',
+  attemptId: '30', slot: '1', pageKind: 'review', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20',
+  type: 'choice', text: 'Choose a sample answer.', options, rows: [], answer: [options[0].id], feedback: 'correct', ...extra });
+
+test('duplicate wrong choice labels allow a unique answer; selecting an ambiguous label is rejected', () => {
+  const store = openAnswers(':memory:');
+  try {
+    const q = question({ options: [options[0], options[0], options[1]], answer: [options[1].id] });
+    store.importReview([q]);
+    assert.equal(store.lookup(q).status, 'known');
+    assert.deepEqual(store.lookup(q).answer, [options[1].id]);
+    assert.equal(questionKey(q), questionKey({ ...q, options: [...q.options].reverse() }));
+    assert.throws(() => answerSignature(q, [options[0].id]), /INVALID_ANSWER/);
+    assert.equal(store.importReview([{ ...q, answer: [options[0].id] }]).skipped, 1);
+    assert.equal(store.lookup({ ...q, type: 'multiple' }).status, 'unsupported');
+  } finally { store.close(); }
+});
+
+test('persistent cache reuses answers after option reorder and reimport, with scope isolation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'batch-answers-'));
+  let store;
+  try {
+    store = openAnswers(join(dir, 'answers.sqlite'));
+    assert.equal(store.importReview([question()]).total, 1);
+    assert.equal(store.importReview([question()]).total, 1);
+    store.close(); store = openAnswers(join(dir, 'answers.sqlite'));
+    const reordered = question({ options: [...options].reverse(), attemptId: '999' });
+    assert.equal(questionKey(reordered), questionKey(question()));
+    assert.deepEqual(store.lookup(reordered).answer, [optionId('Alpha')]);
+    for (const change of [{ text: 'Different?' }, { userScope: 'u2' }, { courseId: '11' }, { contextHash: 'new-material' },
+      { options: options.map(o => o.text === 'Gamma' ? { text: 'Delta', id: optionId('Delta') } : o) }]) {
+      assert.equal(store.lookup(question(change)).status, 'unresolved');
+    }
+  } finally { store?.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('wrong and partial multiple answers exclude whole combinations; revealed answer can be retained', () => {
+  const store = openAnswers(':memory:');
+  try {
+    const q = question({ type: 'multiple', answer: [options[0].id, options[1].id], feedback: 'partiallycorrect', revealedAnswer: [options[0].id, options[2].id] });
+    store.importReview([q]);
+    const result = store.lookup(q);
+    assert.equal(result.status, 'known');
+    assert.deepEqual(result.answer, [...q.revealedAnswer].sort());
+    assert.deepEqual(result.excludedAnswers, [[...q.answer].sort()]);
+    assert.equal(result.excludedAnswers.length, 1);
+    const wrong = question({ answer: [options[1].id], feedback: 'incorrect' });
+    store.importReview([wrong]);
+    assert.deepEqual(store.lookup(wrong).excludedAnswers, [[options[1].id]]);
+    assert.equal(store.lookup(wrong).status, 'unresolved');
+  } finally { store.close(); }
+});
+
+test('contradictory feedback and unconfirmed candidates never become known answers', () => {
+  const store = openAnswers(':memory:');
+  try {
+    store.importReview([question({ feedback: 'unconfirmed' })]);
+    assert.equal(store.lookup(question()).status, 'unresolved');
+    store.importReview([question()]);
+    const otherAttempt = extra => question({ attemptId: '31', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=31&cmid=20', ...extra });
+    store.importReview([otherAttempt({ answer: [options[1].id] })]);
+    assert.equal(store.lookup(question()).status, 'conflict');
+    assert.equal(store.lookup(question()).answer, null);
+    store.importReview([otherAttempt({ answer: [options[0].id], feedback: 'incorrect' })]);
+    assert.equal(store.lookup(question()).status, 'conflict');
+    assert.deepEqual(store.lookup(question()).excludedAnswers, []);
+  } finally { store.close(); }
+});
+
+test('a later hidden review cannot erase confirmed answers or excluded wrong combinations', () => {
+  const store = openAnswers(':memory:');
+  try {
+    const correct = question();
+    store.importReview([correct]);
+    store.importReview([{ ...correct, feedback: 'unconfirmed', answer: [options[1].id] }]);
+    assert.deepEqual(store.lookup(correct).answer, correct.answer);
+    const wrong = question({ attemptId: '31', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=31&cmid=20',
+      answer: [options[1].id], feedback: 'incorrect' });
+    store.importReview([wrong]);
+    store.importReview([{ ...wrong, feedback: 'unconfirmed' }]);
+    assert.deepEqual(store.lookup(wrong).excludedAnswers, [wrong.answer]);
+    const partial = question({ type: 'multiple', answer: [options[0].id, options[1].id], feedback: 'partiallycorrect' });
+    store.importReview([partial]);
+    store.importReview([{ ...partial, feedback: 'unconfirmed' }]);
+    assert.deepEqual(store.lookup(partial).excludedAnswers, [[...partial.answer].sort()]);
+  } finally { store.close(); }
+});
+
+test('import requires exact review provenance and rolls back on a mismatched page', () => {
+  const store = openAnswers(':memory:');
+  try {
+    assert.throws(() => store.importReview([question(), question({ slot: '2', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=999&cmid=20' })]), /REVIEW_PROVENANCE_REQUIRED/);
+    assert.equal(store.lookup(question()).observations, 0);
+    assert.throws(() => store.importReview([question({ pageKind: 'attempt' })]), /REVIEW_PROVENANCE_REQUIRED/);
+    assert.equal(store.lookup(question({ options: [options[0], options[0]] })).status, 'unsupported');
+    assert.equal(store.lookup(question({ unsupportedReason: 'MEDIA' })).status, 'unsupported');
+    assert.equal(store.importReview([question({ answer: ['invented'] })]).total, 0);
+  } finally { store.close(); }
+});
+
+test('matching answers remain complete mappings and text answers retain their content', () => {
+  const store = openAnswers(':memory:');
+  try {
+    const rows = ['First', 'Second'].map(text => ({ text, id: digest(['row-v1', text, options.map(o => o.text).sort()]), options }));
+    const answer = Object.fromEntries(rows.map(row => [row.id, options[0].id]));
+    const q = question({ type: 'matching', options: [], rows, answer });
+    store.importReview([q]);
+    assert.deepEqual(store.lookup({ ...q, rows: [...rows].reverse() }).answer, answer);
+    const text = question({ type: 'text', text: 'Name the term.', options: [], answer: '  Exact  term  ' });
+    store.importReview([text]);
+    assert.equal(store.lookup(text).answer, 'Exact term');
+  } finally { store.close(); }
+});

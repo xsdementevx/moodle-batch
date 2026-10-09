@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Moodle Batch",
+  "version": "1.0.0",
+  "description": "Пакетное решение тестов, память ответов и проверка результатов Moodle.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "worker.js" },
+  "action": { "default_title": "Moodle Batch — тесты" },
+  "content_scripts": [{
+    "matches": ["https://sdo.sibupk.su/mod/quiz/*", "https://sdo.sibupk.su/grade/report/overview/*"],
+    "js": ["content.js"], "run_at": "document_idle"
+  }]
+}
