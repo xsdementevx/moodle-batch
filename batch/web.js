@@ -65,16 +65,18 @@ export function parseWeb(text, questions, requestId, citations) {
     if (!item || typeof item.needsReview !== 'boolean' || !Array.isArray(item.sourceUrls)) throw new Error('INVALID_WEB_RESPONSE');
     const sourceUrls = item.sourceUrls.filter(url => sourceKey(url) && observed.has(sourceKey(url)));
     if (Object.hasOwn(item, 'confidence') && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) throw new Error('INVALID_WEB_RESPONSE');
-    if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < 0.85)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls, verifiedByMoodle: false };
+    const confidence = item.confidence === undefined ? {} : { confidence: item.confidence };
+    if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < 0.85)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
+      ...confidence, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
     // Validate the model's type before applying the legacy short-answer rules.
     answerSignature(q, item.answer);
     const answer = q.type === 'text' && q.textFormat !== 'numerical'
       ? normalizeShortAnswerForQuestion(q.text, item.answer) : item.answer;
     if (isExcludedAnswer(q, answer)) return {
       slot: q.slot, provider: 'gpt_web', answer: null, rejectedAnswer: answer, status: 'needs_review',
-      reviewReason: 'excluded_answer', sourceUrls, verifiedByMoodle: false };
+      reviewReason: 'excluded_answer', sourceUrls, ...confidence, verifiedByMoodle: false };
     return { slot: q.slot, provider: 'gpt_web', answer, ...(answer !== item.answer ? { rawAnswer: item.answer } : {}),
-      status: sourceUrls.length || item.evidence?.kind === 'context' ? 'candidate' : 'needs_review',
+      status: sourceUrls.length || item.evidence?.kind === 'context' ? 'candidate' : 'needs_review', ...confidence,
       ...(item.evidence ? { evidence: item.evidence } : {}), sourceUrls, searchObserved: citations.length > 0, verifiedByMoodle: false };
   });
 }
@@ -147,13 +149,14 @@ async function readConversation(page, questions, requestId, parentRequestId, con
     const id = /^\/c\/([a-zA-Z0-9-]+)$/u.exec(pathname)?.[1];
     if (location.origin !== 'https://chatgpt.com' || !id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
     const sessionResponse = await fetch('/api/auth/session');
-    if (!sessionResponse.ok) throw new Error('GPT_WEB_SESSION_READ_FAILED');
+    if (!sessionResponse.ok) return { error: 'GPT_WEB_SESSION_READ_FAILED' };
     const session = await sessionResponse.json();
-    if (!session.accessToken) throw new Error('GPT_WEB_SESSION_TOKEN_UNAVAILABLE');
+    if (!session.accessToken) return { error: 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE' };
     const response = await fetch(`/backend-api/conversation/${encodeURIComponent(id)}`, {
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
-    if (!response.ok) throw new Error('GPT_WEB_CONVERSATION_READ_FAILED');
+    if (!response.ok) return { error: response.status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
+      : [401, 403].includes(response.status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED' : 'GPT_WEB_CONVERSATION_READ_FAILED' };
     const data = await response.json();
     if (data.id && data.id !== id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
     const messages = [];
@@ -173,6 +176,7 @@ async function readConversation(page, questions, requestId, parentRequestId, con
     }
     return messages;
   }, target.pathname);
+  if (messages.error) throw new Error(messages.error);
   return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl: target.href };
 }
 

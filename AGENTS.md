@@ -1,5 +1,27 @@
 # Moodle Batch
 
+Текущий сервис после последних исправлений: session83956,порт49805. После
+перезапуска authRequired:false,running:false,activeJobs0. Состояние подтверждено
+через живой /state, не только jobs.json. Пользовательского ответа о404 пока нет.
+
+10.10 read-only проверка291393: исходная беседа6ac88497-cac4-83ed-8c34-06b270a35987
+и найденная прежняя parent беседа возвращают404. Это не доказательство удаления
+или смены аккаунта. Недавняя беседа authors доступна200, session200/tokenAvailable.
+Original pending789a9f4dea82d40d2627319721607903dd04e58c5515b7b15464de4adbb17c3f
+сохранён без изменения; новых запросов модели не отправляли. Пользователю задан
+async вопрос, удалялись ли чаты/проект или менялся аккаунт ChatGPT; ответа нет.
+Reader возвращает ожидаемые HTTP/auth ошибки как data через page.evaluate,
+после чего бросает точный код на стороне Node. Иначе Playwright добавлял префикс,
+и safeCode превращал полезный код в LOCAL_OR_NETWORK_ERROR. HTTP404 теперь
+GPT_WEB_CONVERSATION_UNAVAILABLE,401/403 ACCESS_DENIED, с понятными текстами UI.
+Native readWebResult подтвердил новый404 код на старой беседе, без отправки.
+parseWeb сохраняет confidence/evidence и для needs_review; uncertainty никогда
+не переводится в candidate из-за совпадения цитаты. Confidence передаётся через
+unresolvedQuestions в журнал/копируемый отчёт как «уверенность модели».66/66 tests.
+Контекст291373 перечитан: авторов упоминает, спорного названия книги не содержит;
+9070486 остаётся активной, used4/allowed5/remaining1new. Все прежние ограничения
+на guesses и неизвестные исходы сохраняются. Максимальная цель не достигнута.
+
 live-modern-option-memory-v1-20261010 завершён UNRESOLVED_SUBMISSION:
 продолжена прежняя attempt9066369 (без новой попытки), остался slot1 matching
 «Правильная последовательность событий2008г.» model_uncertain после High.

@@ -59,7 +59,8 @@ export function buildSubmission(test, questions) {
       const error = new Error('UNRESOLVED_SUBMISSION');
       error.unresolvedQuestions = questions.filter(item => ['conflict', 'unsupported'].includes(item.memory?.status)
         || !['confirmed', 'candidate'].includes(item.decision?.status)).map(item => ({ slot: item.slot,
-        reason: item.decision?.reviewReason || item.memory?.status || 'unresolved', provider: item.decision?.provider || null }));
+        reason: item.decision?.reviewReason || item.memory?.status || 'unresolved', provider: item.decision?.provider || null,
+        ...(Number.isFinite(item.decision?.confidence) ? { confidence: item.decision.confidence } : {}) }));
       throw error;
     }
     if (isExcludedAnswer(q, q.decision.answer)) throw new Error('EXCLUDED_SUBMISSION_ANSWER');

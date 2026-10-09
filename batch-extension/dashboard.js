@@ -24,18 +24,21 @@ const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на ко
   QUESTION_PACKET_TOO_LARGE: 'Один вопрос превышает размер запроса модели. Решение остановлено; попытка не отправлена.',
   SERVICE_RESTARTED: 'Сервис был перезапущен. Проверьте последнюю попытку перед новым запуском.', JOB_ALREADY_RUNNING: 'Другой запуск уже выполняется.' };
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
+errors.GPT_WEB_CONVERSATION_UNAVAILABLE = 'Сохранённая беседа ChatGPT недоступна (404). Проверьте аккаунт и наличие чата. Повторный запрос не отправляется.';
+errors.GPT_WEB_CONVERSATION_ACCESS_DENIED = 'ChatGPT не разрешил прочитать беседу. Проверьте вход в тот же аккаунт в браузере.';
 const node = (tag, text, className) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; };
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 const effortLabel = { Instant: 'Лёгкое размышление', Medium: 'Среднее размышление', High: 'Высокое размышление', instant: 'Лёгкое размышление', medium: 'Среднее размышление', high: 'Высокое размышление' };
 const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
 const feedbackLabel = value => ({ correct: 'Верно', incorrect: 'Неверно', partiallycorrect: 'Частично верно', unconfirmed: 'Результат не раскрыт' }[value] || 'Результат не раскрыт');
+const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}`;
 function problemDetails(q) {
   const latest = current?.jobs.slice().reverse().flatMap(job => job.results || []).find(result => result.quizId === q.quizId);
   const code = latest?.error || q.error || q.reviewError;
   return [code ? errors[code] || code : '', q.analysis?.conflict ? `Конфликтов в памяти: ${q.analysis.conflict}` : '',
     q.analysis?.unsupported ? `Неподдерживаемых вопросов: ${q.analysis.unsupported}` : '',
-    ...(latest?.unresolvedQuestions || []).map(item => `Вопрос ${item.slot}: ${reviewReasons[item.reason] || item.reason}`),
+    ...(latest?.unresolvedQuestions || []).map(reviewDetail),
     ...(latest?.attempts.at(-1)?.sources || []).filter(item => ['incorrect', 'partiallycorrect'].includes(item.feedback))
       .map(item => `Вопрос ${item.slot}: ${feedbackLabel(item.feedback)} по проверке Moodle`)].filter(Boolean);
 }
@@ -99,7 +102,7 @@ function reportFor(job) {
   for (const result of job.results) {
     const last = result.attempts.at(-1);
     lines.push(`Тест ${result.quizId} | ${result.status} | попыток: ${result.attempts.length} | оценка: ${last?.percent ?? 'нет'}${Number.isFinite(last?.percent) ? '%' : ''}${result.error ? ` | ${result.error}: ${errors[result.error] || result.error}` : ''}`);
-    for (const question of result.unresolvedQuestions || []) lines.push(`  Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}; ${question.provider || 'без ответа'} [${question.reason}]`);
+    for (const question of result.unresolvedQuestions || []) lines.push(`  ${reviewDetail(question)}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
       for (const source of attempt.sources || []) {
@@ -144,7 +147,7 @@ function showJobs(force = false) {
     const test = node('td'); const link = node('a', result.quizId); link.href = `${current.origin}/mod/quiz/view.php?id=${encodeURIComponent(result.quizId)}`; link.target = '_blank'; link.rel = 'noopener'; test.append(link);
     const status = result.error ? 'Остановлен' : last?.percent === 100 ? '100%' : result.status === 'running' ? 'В работе' : result.status === 'stopped' ? 'Остановлен' : 'Нужна проверка';
     const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток: ${result.attempts.length}`);
-    for (const question of result.unresolvedQuestions || []) description.append(node('small', `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}`, 'quiz-meta'));
+    for (const question of result.unresolvedQuestions || []) description.append(node('small', reviewDetail(question), 'quiz-meta'));
     if (sourceSummary(last)) description.append(node('small', sourceSummary(last), 'quiz-meta'));
     if (last?.sources?.length) {
       const review = node('details'); review.append(node('summary', 'Проверка каждого вопроса Moodle'));

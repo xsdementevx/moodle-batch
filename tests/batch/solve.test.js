@@ -8,6 +8,21 @@ import { optionId, digest, questionKey } from '../../batch/answers.js';
 import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
 import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
 import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, webSolver } from '../../batch/web.js';
+import { verifyEvidence } from '../../batch/evidence.js';
+
+test('uncertain Web responses preserve diagnostics but remain unverified', async () => {
+  const question = q('1');
+  const evidence = { kind: 'web', url: 'https://source.example/', quote: 'A factual quote retained for later analysis.' };
+  const decisions = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.8,
+    needsReview: false, sourceUrls: [evidence.url], evidence }] }), [question], 'nonce', [evidence.url]);
+  assert.equal(decisions[0].confidence, 0.8);
+  assert.deepEqual(decisions[0].evidence, evidence);
+  assert.equal(decisions[0].status, 'needs_review');
+  const verified = await verifyEvidence(decisions, [question], { text: '' }, { readSource: async () => assert.fail('uncertainty must not be promoted by a matching quote') });
+  assert.equal(verified[0].status, 'needs_review');
+  assert.equal(verified[0].evidenceVerified, false);
+  assert.equal(verified[0].reviewReason, 'model_uncertain');
+});
 import { closeExtensionTabs } from '../../batch/extension.js';
 import { chromium } from 'playwright';
 import { extractMaterial, loadContext } from '../../batch/context.js';
@@ -155,6 +170,18 @@ test('a completed conversation is read without waiting on DOM, while a foreign r
   assert.equal(reads, 1);
   await assert.rejects(readWebResult(page, [q('1')], 'foreign'), /FOREIGN_CONVERSATION/);
   assert.equal(reads, 2);
+});
+
+test('unavailable conversation and access errors stop the pinned read without retry or sending', async () => {
+  for (const code of ['GPT_WEB_CONVERSATION_UNAVAILABLE', 'GPT_WEB_CONVERSATION_ACCESS_DENIED', 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE']) {
+    let reads = 0;
+    const page = { url: () => 'https://chatgpt.com/c/owned-conversation',
+      evaluate: async () => { reads++; return { error: code }; },
+      locator: () => assert.fail('a read error must not touch draft or send controls'),
+      waitForFunction: () => assert.fail('unavailable conversation must not wait for DOM') };
+    await assert.rejects(readWebResult(page, [q('1')], 'nonce'), error => error.message === code);
+    assert.equal(reads, 1);
+  }
 });
 
 test('extension reconnects a missing or detached context before dispatch and never retries a pending packet', async () => {
