@@ -120,17 +120,20 @@ export function parseConversation(messages, questions, requestId, parentRequestI
   const users = messages.filter(m => m.role === 'user');
   const finals = messages.filter(m => m.role === 'assistant' && m.endTurn && typeof m.text === 'string' && m.text.trim());
   const turns = parents.length + 1;
-  if (users.length !== turns || !users.at(-1).text?.includes(requestId) || finals.length !== turns
+  if (users.length !== turns || !users.at(-1).text?.includes(requestId) || finals.length > turns
       || parents.some((id, i) => !users[i].text?.includes(id))) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
+  if (finals.length < turns) throw new Error('GPT_WEB_RESPONSE_NOT_READY');
   const text = finals.at(-1).text.trim().replace(/^<escape>([\s\S]*)<\/escape>$/u, '$1');
   const sources = messages.filter(m => m.role === 'tool' && m.toolName === 'web.run')
     .flatMap(m => m.sources || []).filter(url => typeof url === 'string' && /^https:\/\//u.test(url));
   return parseWeb(text, questions, requestId, [...new Set(sources)]);
 }
 
-async function readConversation(page, questions, requestId, parentRequestId) {
-  const messages = await page.evaluate(async () => {
-    const id = /^\/c\/([a-zA-Z0-9-]+)$/u.exec(location.pathname)?.[1];
+async function readConversation(page, questions, requestId, parentRequestId, conversationUrl = page.url()) {
+  const target = new URL(conversationUrl);
+  if (!/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target.href)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  const messages = await page.evaluate(async pathname => {
+    const id = /^\/c\/([a-zA-Z0-9-]+)$/u.exec(pathname)?.[1];
     if (location.origin !== 'https://chatgpt.com' || !id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
     const sessionResponse = await fetch('/api/auth/session');
     if (!sessionResponse.ok) throw new Error('GPT_WEB_SESSION_READ_FAILED');
@@ -158,14 +161,15 @@ async function readConversation(page, questions, requestId, parentRequestId) {
       node = data.mapping?.[node.parent];
     }
     return messages;
-  });
-  return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl: page.url() };
+  }, target.pathname);
+  return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl: target.href };
 }
 
-export async function readWebResult(page, questions, requestId, parentRequestId) {
-  await page.waitForFunction(id => [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')]
+export async function readWebResult(page, questions, requestId, parentRequestId, conversationUrl) {
+  if (conversationUrl && page.url() !== conversationUrl) return readConversation(page, questions, requestId, parentRequestId, conversationUrl);
+  try { await page.waitForFunction(id => [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')]
     .some(e => e.textContent.includes(id)), requestId, { timeout: 30000 });
-  try { await page.waitForFunction(turns => {
+  await page.waitForFunction(turns => {
     const assistants = [...document.querySelectorAll('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]')];
     const assistant = assistants.at(-1);
     if (assistants.length !== turns) return false;
@@ -174,10 +178,11 @@ export async function readWebResult(page, questions, requestId, parentRequestId)
         || assistant.querySelector('button[aria-label="Копировать"],button[aria-label="Copy"]'));
   }, (parentRequestId ? [parentRequestId].flat().length : 0) + 1, { timeout: 300000 }); }
   catch (error) {
-    if (error.name !== 'TimeoutError' || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) throw error;
+    if (error.name !== 'TimeoutError' || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(conversationUrl || page.url())) throw error;
     // A stale message DOM must not discard a completed, scope-validated reply.
-    return readConversation(page, questions, requestId, parentRequestId);
+    return readConversation(page, questions, requestId, parentRequestId, conversationUrl || page.url());
   }
+  if (conversationUrl && page.url() !== conversationUrl) return readConversation(page, questions, requestId, parentRequestId, conversationUrl);
   const assistant = page.locator('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]');
   const userCount = await page.locator('[data-message-author-role="user"]').count()
     || await page.locator('[data-content-search-turn-key]').count();
@@ -185,7 +190,7 @@ export async function readWebResult(page, questions, requestId, parentRequestId)
   if (await assistant.count() !== turns || userCount !== turns) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
   // The current interface renders assistant text outside the readable message DOM.
   // Read only this completed conversation through its authenticated browser session.
-  if (await page.locator('[data-talvt-turn-state="complete"]').count()) return readConversation(page, questions, requestId, parentRequestId);
+  if (await page.locator('[data-talvt-turn-state="complete"]').count()) return readConversation(page, questions, requestId, parentRequestId, conversationUrl || page.url());
   const latest = assistant.last();
   const code = latest.locator('pre code');
   const text = await code.count() === 1 ? await code.innerText() : await latest.innerText();
@@ -197,6 +202,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   const composer = await readyWeb(page);
   const users = page.locator('[data-message-author-role="user"],[data-content-search-turn-key]');
   const parents = parentRequestId ? [parentRequestId].flat() : [];
+  const conversationUrl = parents.length ? page.url() : undefined;
   if (parents.length) {
     try {
       await page.waitForFunction(ids => {
@@ -229,19 +235,20 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   const prompt = webPrompt(questions, context, requestId);
   await composer.fill(prompt);
   if (!(await composer.innerText()).includes(requestId)) throw new Error('GPT_WEB_DRAFT_MISMATCH');
+  if (conversationUrl && page.url() !== conversationUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   const send = page.locator('button[data-testid="send-button"],button[aria-label="Отправить"],button[aria-label="Send"]').first();
   try { await send.waitFor({ state: 'visible', timeout: 5000 }); }
   catch { throw new Error('GPT_WEB_SEND_UNAVAILABLE'); }
   const snapshot = await checkpointed(journalPath, async () => {
     await send.click();
     try {
-      const result = await readWebResult(page, questions, requestId, parentRequestId);
+      const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl);
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
       return { ...result, reasoning: effort, sourcePolicy: 3 };
     } catch (error) {
-      await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: page.url() }), { mode: 0o600 });
+      await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url() }), { mode: 0o600 });
       if (/^[A-Z_]+$/u.test(error.message || '')) throw error;
       throw new Error('UNKNOWN_WEB_OUTCOME');
     }
@@ -295,6 +302,7 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
       try {
         if (options.continueUrl && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(options.continueUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
         await page.goto(options.continueUrl || 'https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        if (options.continueUrl && page.url() !== options.continueUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
         await closeExtensionTabs(browser);
         return await dispatchWeb(page, questions, context, options);
       } catch (error) {
@@ -317,6 +325,7 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
       const page = await browserContext.newPage();
       if (options.continueUrl && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(options.continueUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
       await page.goto(options.continueUrl || 'https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      if (options.continueUrl && page.url() !== options.continueUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
       return await dispatchWeb(page, questions, context, options);
     } finally { await browserContext?.close(); await browser?.close(); }
   };

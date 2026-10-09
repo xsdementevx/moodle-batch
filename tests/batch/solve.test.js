@@ -90,6 +90,7 @@ test('conversation parser validates identity, final answer and actual web tool e
   assert.equal(parseConversation(messages.filter(m => m.role !== 'tool'), [q('1')], 'nonce')[0].status, 'needs_review');
   assert.throws(() => parseConversation(messages, [q('1')], 'foreign'), /FOREIGN_CONVERSATION/);
   assert.throws(() => parseConversation([...messages, messages[3]], [q('1')], 'nonce'), /FOREIGN_CONVERSATION/);
+  assert.throws(() => parseConversation([...messages.slice(0, 3), { role: 'assistant', endTurn: true }], [q('1')], 'nonce'), /RESPONSE_NOT_READY/);
   const dir = await mkdtemp(join(tmpdir(), 'batch-completed-web-'));
   try {
     const journalPath = join(dir, 'web.json');
@@ -154,6 +155,20 @@ test('extension reconnects a missing or detached context before dispatch and nev
     assert.equal(connects, 3);
   } finally { await solve.close(); await rm(dir, { recursive: true, force: true }); }
   assert.deepEqual(detached, [1, 2, 3]);
+});
+
+test('continuation result reads the confirmed conversation when the visible tab navigates elsewhere', async () => {
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: [] }] };
+  const messages = [{ role: 'user', text: 'requestId parent' }, { role: 'assistant', endTurn: true, text: 'previous response' },
+    { role: 'user', text: 'requestId nonce' }, { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
+  const page = { url: () => 'https://chatgpt.com/c/foreign-chat',
+    waitForFunction: () => assert.fail('foreign DOM must not be inspected'),
+    evaluate: async (_fn, pathname) => { assert.equal(pathname, '/c/owned-chat'); return messages; },
+    locator: () => assert.fail('foreign composer must not be touched') };
+  const result = await readWebResult(page, [q('1')], 'nonce', ['parent'], 'https://chatgpt.com/c/owned-chat');
+  assert.equal(result.conversationUrl, 'https://chatgpt.com/c/owned-chat');
+  await assert.rejects(readWebResult(page, [q('1')], 'nonce', ['wrong-parent'], 'https://chatgpt.com/c/owned-chat'), /FOREIGN_CONVERSATION/);
+  await assert.rejects(readWebResult(page, [q('1')], 'nonce', ['parent'], 'https://other.example/c/owned-chat'), /SCOPE_MISMATCH/);
 });
 
 test('Jev rejects incomplete probabilities, insufficient context, partial multiple and excluded answers', () => {

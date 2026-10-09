@@ -20,12 +20,14 @@ async function main() {
     profileDir: resolve(process.env.LOCALAPPDATA || '', 'Yandex/YandexBrowser/User Data'),
     executablePath: 'C:/Program Files/Yandex/YandexBrowser/Application/browser.exe',
   });
-  let page, moodle;
+  let page, moodle, stage = 'CONNECTION';
   try {
     const context = browser.contexts()[0];
     if (!context) throw new Error('GPT_EXTENSION_CONTEXT_UNAVAILABLE');
     page = await context.newPage();
-    await page.goto(`${origin}/login/index.php`, { waitUntil: 'domcontentloaded' });
+    stage = 'PAGE';
+    // Reuse the signed-in browser session before attempting another login.
+    await page.goto(`${origin}/user/profile.php`, { waitUntil: 'domcontentloaded' });
     await closeExtensionTabs(browser);
     if (await page.locator('#username').count()) {
       const credentials = JSON.parse(await readFile(resolve(values.credentials), 'utf8'));
@@ -35,16 +37,23 @@ async function main() {
       if (new URL(page.url()).origin !== origin || new URL(action).origin !== origin) throw new Error('LOGIN_ORIGIN_MISMATCH');
       await page.locator('#username').fill(credentials.username);
       await page.locator('#password').fill(credentials.password);
+      stage = 'SUBMIT';
       // One submission only: an uncertain result must never trigger another login.
       await Promise.all([page.waitForNavigation({ waitUntil: 'domcontentloaded' }), page.locator('#loginbtn').click()]);
     }
+    stage = 'PROFILE';
     await page.goto(`${origin}/user/profile.php`, { waitUntil: 'domcontentloaded' });
+    stage = 'COOKIE_EXPORT';
     await writeFile(temporary, JSON.stringify(cookieState(await context.cookies(origin), origin)), { mode: 0o600 });
+    stage = 'ACCOUNT_CHECK';
     moodle = await openMoodle({ authFile: temporary, origin });
     if (expected && (expected.origin !== origin || expected.userScope !== moodle.userScope)) throw new Error('USER_SCOPE_MISMATCH');
     await moodle.close(); moodle = null;
+    stage = 'SAVE';
     await rename(temporary, authFile);
     console.log('Вход выполнен. Нажмите «Обновить анализ» в расширении.');
+  } catch (error) {
+    throw new Error(/^[A-Z_0-9]+$/u.test(error.message) ? error.message : `LOGIN_${stage}_FAILED`, { cause: error });
   } finally {
     await moodle?.close({ save: false });
     await page?.close();
