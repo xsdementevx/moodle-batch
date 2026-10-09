@@ -74,6 +74,8 @@ test('one final request maps stable answers to native fields and rejects unresol
   const bad = structuredClone(attempt);
   bad.questions[0].decision.status = 'needs_review';
   assert.throws(() => buildSubmission(bad, bad.questions), /UNRESOLVED/);
+  try { buildSubmission(bad, bad.questions); assert.fail('must stop unresolved answer'); }
+  catch (error) { assert.equal(error.unresolvedQuestions[0].slot, '1'); assert.ok(error.unresolvedQuestions[0].reason); }
   bad.questions[0].decision.status = 'candidate';
   bad.questions[0].memory.excludedAnswers = [bad.questions[0].decision.answer];
   assert.throws(() => buildSubmission(bad, bad.questions), /EXCLUDED/);

@@ -198,12 +198,24 @@ export async function openParser() {
         const startForms = [...document.forms].filter(f => new URL(f.getAttribute('action') || '', base).pathname === '/mod/quiz/startattempt.php');
         const entryForms = startForms.filter(f => !f.querySelector('input[name="_qf__mod_quiz_preflight_check_form"]'));
         const start = entryForms.length === 1 ? entryForms[0] : null;
+        const attemptRows = [...document.querySelectorAll('.quizattemptsummary tbody tr')];
+        const attemptHeaders = [...document.querySelectorAll('.quizattemptsummary thead th')].map(th => norm(th.textContent));
+        const attemptColumn = attemptHeaders.findIndex(text => /^(?:Попытка|Attempt)$/iu.test(text));
+        const numbers = attemptRows.map(row => norm(row.querySelectorAll('th,td')[Math.max(0, attemptColumn)]?.textContent))
+          .filter(text => /^\d+$/u.test(text)).map(Number);
+        const info = norm(document.querySelector('.quizinfo')?.textContent);
+        const limit = /(?:Разрешено попыток|Количество разрешённых попыток|Attempts allowed)\s*:\s*(\d+)/iu.exec(info);
+        const unlimited = /(?:Разрешено попыток|Количество разрешённых попыток|Attempts allowed)\s*:\s*(?:неограниченно|не ограничено|unlimited)(?=\s|$|[.,])/iu.test(info);
+        const used = numbers.length ? Math.max(...numbers) : attemptRows.length ? null : 0;
+        const allowed = limit ? Number(limit[1]) : null;
+        const attemptUsage = { used, allowed, unlimited, remaining: allowed !== null && used !== null ? Math.max(0, allowed - used) : null };
         return {
           login: Boolean(document.querySelector('#login,form[action*="/login/"]')),
           bodyId: document.body.id, courseId, quizId, userScope, attemptId, page: pageNumber,
-          attemptSummaries: kind === 'view' ? [...document.querySelectorAll('.quizattemptsummary tbody tr')].map(row => ({
+          attemptUsage: kind === 'view' ? attemptUsage : null,
+          attemptSummaries: kind === 'view' ? attemptRows.map(row => ({
             cells: [...row.querySelectorAll('td')].map(td => norm(td.textContent)),
-            headers: [...document.querySelectorAll('.quizattemptsummary thead th')].map(th => norm(th.textContent)),
+            headers: attemptHeaders,
           })) : [],
           resultSummary: kind === 'review' ? [...document.querySelectorAll('.quizreviewsummary tr')].map(row => ({
             label: norm(row.querySelector('th')?.textContent), value: norm(row.querySelector('td')?.textContent),

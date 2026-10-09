@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
 import { openService, serviceServer } from '../../batch/service.js';
-import { runQuiz, runQuizzes } from '../../batch/run.js';
+import { prepareQuiz, runQuiz, runQuizzes } from '../../batch/run.js';
 import { optionId } from '../../batch/answers.js';
 
 const scope = { origin: 'https://sdo.sibupk.su', userScope: '42', courseId: '10', quizId: '20', attemptId: '30' };
@@ -72,6 +72,15 @@ test('Stop prevents later retries; restart marks running jobs interrupted withou
     service = await openService({ ...deps(root), runner: () => assert.fail('restart must not dispatch') });
     assert.equal(service.state().jobs[0].status, 'interrupted');
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('preparation skips material requests when all questions are confirmed in memory', async () => {
+  const view = { ...scope, reviews: [], activeUrl: `${scope.origin}/mod/quiz/attempt.php?attempt=30&cmid=20` };
+  const moodle = { ...scope, read: async () => view, collect: async () => ({ ...scope, kind: 'attempt', complete: true, questions: [{ ...scope, slot: '1' }] }) };
+  const store = { lookup: () => ({ status: 'known', answer: ['synthetic'] }) };
+  const prepared = await prepareQuiz(moodle, store, '20', { root: '.', contextLoader: () => assert.fail('confirmed answers must not download materials') });
+  assert.equal(prepared.context.reason, 'NO_UNRESOLVED_QUESTIONS');
+  assert.equal(prepared.questions[0].memory.status, 'known');
 });
 
 test('real runner keeps native submission, checks Stop and records model attribution with Moodle feedback', async () => {
@@ -298,4 +307,22 @@ test('installed extension recovers a lost start reply after reopening without ch
     assert.equal(calls, 1, 'filtering and selecting must not send an attempt');
     assert.equal(await page.locator('#responseform input').inputValue(), 'unchanged');
   } finally { await context?.close(); if (server) await new Promise(done => server.close(done)); await service?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('batch errors become visible immediately with question reasons and are not logged twice', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'batch-errors-'));
+  let service, release; const gate = new Promise(done => { release = done; });
+  try {
+    service = await openService({ ...deps(root), batchRunner: async (moodle, store, ids, options) => {
+      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web' }];
+      await options.onError('20', error); await gate;
+      return [{ quizId: '20', error }];
+    } });
+    await service.start(input);
+    while (!service.state().jobs[0].results[0]?.error) await new Promise(done => setTimeout(done, 5));
+    assert.equal(service.state().jobs[0].status, 'running');
+    assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].reason, 'source_quote_not_found');
+    release(); await waitDone(service);
+    assert.equal(service.state().jobs[0].events.filter(e => e.kind === 'error').length, 1);
+  } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });

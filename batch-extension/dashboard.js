@@ -45,7 +45,7 @@ function buttons() {
   for (const control of $('courses').querySelectorAll('input[type=checkbox],.course-select')) control.disabled = locked;
   $('stop').disabled = !busy() || busy().stopRequested;
   $('stop').textContent = busy()?.stopRequested ? 'Остановка запрошена…' : 'Остановить после текущего действия';
-  $('refresh').disabled = Boolean(current?.running) || pending; $('analyze').disabled = $('refresh').disabled;
+  $('refresh').disabled = Boolean(current?.running) || pending; $('analyze').disabled = $('refresh').disabled; $('check-attempts').disabled = $('refresh').disabled;
   $('selection-count').textContent = selected.size ? `Выбрано тестов: ${selected.size}` : 'Ничего не выбрано';
   const shown = new Set(visibleQuizzes().map(q => q.quizId));
   const hidden = [...selected].filter(id => !shown.has(id)).length;
@@ -74,6 +74,7 @@ function eventText(event) {
   return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.round ? `попытка ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : ''].filter(Boolean).join(' · ');
 }
 let jobsSignature = '';
+const reviewReasons = { model_uncertain: 'Модель не уверена в ответе', source_quote_not_found: 'Цитата не найдена в веб-источнике', context_quote_not_found: 'Цитата не найдена в материале', source_not_observed: 'Источник не подтверждён веб-поиском', evidence_incomplete: 'Доказательства покрывают не весь ответ', excluded_answer: 'Этот ответ уже был признан неправильным', conflict: 'Противоречие в памяти ответов', unsupported: 'Тип вопроса пока не поддерживается', unresolved: 'Нет проверенного ответа' };
 function sourceSummary(attempt) {
   const sources = attempt?.sources || [];
   return [['memory', 'Память'], ['jev', 'Jev'], ['gpt_web', 'GPT Web']].map(([provider, label]) => sources.some(s => s.provider === provider) ? `${label}: ${sources.filter(s => s.provider === provider).length}` : '').filter(Boolean).join(' · ');
@@ -85,6 +86,7 @@ function reportFor(job) {
   for (const result of job.results) {
     const last = result.attempts.at(-1);
     lines.push(`Тест ${result.quizId} | ${result.status} | попыток: ${result.attempts.length} | оценка: ${last?.percent ?? 'нет'}${Number.isFinite(last?.percent) ? '%' : ''}${result.error ? ` | ${result.error}: ${errors[result.error] || result.error}` : ''}`);
+    for (const question of result.unresolvedQuestions || []) lines.push(`  Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
       for (const source of attempt.sources || []) lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${source.feedback || 'не раскрыто'}`);
@@ -126,6 +128,7 @@ function showJobs(force = false) {
     const test = node('td'); const link = node('a', result.quizId); link.href = `${current.origin}/mod/quiz/view.php?id=${encodeURIComponent(result.quizId)}`; link.target = '_blank'; link.rel = 'noopener'; test.append(link);
     const status = result.error ? 'Остановлен' : last?.percent === 100 ? '100%' : result.status === 'running' ? 'В работе' : result.status === 'stopped' ? 'Остановлен' : 'Нужна проверка';
     const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток: ${result.attempts.length}`);
+    for (const question of result.unresolvedQuestions || []) description.append(node('small', `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}`, 'quiz-meta'));
     if (sourceSummary(last)) description.append(node('small', sourceSummary(last), 'quiz-meta'));
     if (result.error) description.append(node('code', result.error, 'error-code'));
     if (last?.reviewUrl) { try { const url = new URL(last.reviewUrl); if (url.origin === current.origin && url.pathname === '/mod/quiz/review.php') { const review = node('a', ' Результат Moodle ↗'); review.href = url.href; review.target = '_blank'; review.rel = 'noopener'; description.append(review); } } catch { /* malformed link */ } }
@@ -194,7 +197,10 @@ function render(overview, cached = false, force = false) {
       check.addEventListener('change', () => { check.checked ? selected.add(q.quizId) : selected.delete(q.quizId); if ($('grade-filter').value === 'selected') render(overview, false, true); else { buttons(); select.textContent = quizzes.every(q => selected.has(q.quizId)) ? 'Снять выбор' : 'Выбрать'; } });
       const a = node('a', undefined, 'quiz-link');
       a.append(node('div', q.topic ? `${q.topic} — ${q.title}` : q.title));
-      const info = [q.activeAttempt ? 'Активная попытка · продолжение при запуске' : q.preflightRequired ? 'Нужно подтвердить начало в Moodle' : '', Number.isInteger(q.attempts) ? `Попыток: ${q.attempts}` : ''];
+      const usage = q.attemptUsage;
+      const attempts = usage ? `Использовано: ${usage.used ?? 'неизвестно'} · лимит: ${usage.unlimited ? 'без ограничений' : usage.allowed ?? 'неизвестен'} · осталось новых: ${usage.unlimited ? 'без ограничений' : usage.remaining ?? 'неизвестно'}`
+        : Number.isInteger(q.attempts) ? `Попыток в истории: ${q.attempts} · лимит неизвестен` : 'Лимит попыток ещё не проверен';
+      const info = [q.activeAttempt ? 'Активная попытка · продолжение при запуске' : q.preflightRequired ? 'Нужно подтвердить начало в Moodle' : '', attempts];
       if (q.analysis) info.push(`В памяти: ${q.analysis.known}/${q.analysis.total}`, `Нерешённых: ${q.analysis.unresolved}`, q.analysis.withExclusions ? `С исключёнными ответами: ${q.analysis.withExclusions}` : '', q.analysis.conflict ? `Конфликтов: ${q.analysis.conflict}` : '', q.analysis.unsupported ? `Не поддерживается: ${q.analysis.unsupported}` : '');
       if (q.detailCheckedAt) info.push(`Попытки проверены: ${time(q.detailCheckedAt)}`);
       else if (q.analysis || q.activeAttempt || q.attempts) info.push('Состояние попыток — из сохранённого подробного анализа');
@@ -251,7 +257,7 @@ async function load() {
       await chrome.storage.local.remove('pendingJob'); pendingIntent = null; buttons();
     }
   } catch (error) { connected = false; notice(errors[error.message] || error.message, true); $('connection').textContent = 'Нет подключения'; $('connection-dot').classList.remove('online'); $('run').disabled = true; }
-  finally { pending = false; $('refresh').disabled = Boolean(current?.running); $('analyze').disabled = $('refresh').disabled; timer = setTimeout(load, busy() || current?.running ? 2000 : 10000); }
+  finally { pending = false; $('refresh').disabled = Boolean(current?.running); $('analyze').disabled = $('refresh').disabled; $('check-attempts').disabled = $('refresh').disabled; timer = setTimeout(load, busy() || current?.running ? 2000 : 10000); }
 }
 $('low').addEventListener('change', () => { $('grade-filter').value = $('low').checked ? 'low' : 'all'; if (current?.overview) render(current.overview, false, true); });
 $('select').addEventListener('click', () => {
@@ -260,6 +266,7 @@ $('select').addEventListener('click', () => {
 });
 $('clear').addEventListener('click', () => { selected.clear(); if (current?.overview) render(current.overview, false, true); });
 $('analyze').addEventListener('click', async () => { try { await api('refresh', { detailed: true }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
+$('check-attempts').addEventListener('click', async () => { try { await api('refresh', { attemptsOnly: true }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('refresh').addEventListener('click', async () => { try { await api('refresh'); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('stop').addEventListener('click', async () => { try { await api('stop', { requestId: busy().requestId }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('run').addEventListener('click', async () => {

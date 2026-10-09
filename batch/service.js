@@ -55,18 +55,20 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   const updateGrade = result => {
     const course = overview?.courses.find(item => item.courseId === result.courseId);
     const quiz = course?.quizzes.find(item => item.quizId === result.quizId);
-    if (!quiz || !Number.isFinite(result.gradePercent)) return;
-    quiz.percent = result.gradePercent; quiz.status = gradeStatus(quiz.percent);
-    quiz.activeAttempt = false; quiz.updatedAt = new Date().toISOString();
+    if (!quiz) return;
+    if (result.attemptUsage) { quiz.attemptUsage = result.attemptUsage; quiz.detailCheckedAt = new Date().toISOString(); }
+    quiz.activeAttempt = false;
+    if (Number.isFinite(result.gradePercent)) { quiz.percent = result.gradePercent; quiz.status = gradeStatus(quiz.percent); }
+    quiz.updatedAt = new Date().toISOString();
     course.summary = courseSummary(course.quizzes);
     overview.summary = courseSummary(overview.courses.flatMap(item => item.quizzes));
   };
   const recentGrades = new Map();
-  const refresh = ({ detailed = false } = {}) => {
+  const refresh = ({ detailed = false, attemptsOnly = false } = {}) => {
     if (scanTask) return scanTask;
     const previous = overview;
     scanError = null;
-    scanTask = Promise.resolve().then(() => moodle.connect?.()).then(() => scan(moodle, store, { previous, detailed: detailed || !previous, onProgress: next => {
+    scanTask = Promise.resolve().then(() => moodle.connect?.()).then(() => scan(moodle, store, { previous, detailed, attemptsOnly, onProgress: next => {
       overview = { ...next, courses: (next.courses.length ? next.courses : previous?.courses || []).map(course => course.status === 'loading'
         ? previous?.courses.find(old => old.courseId === course.courseId) || course : course) };
       for (const result of recentGrades.values()) updateGrade(result);
@@ -86,8 +88,33 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
       for (let n = 0; n < job.maxAttempts && !job.stopRequested; n++) {
         const pending = job.results.filter(q => !q.error && q.status === 'running');
         if (!pending.length) break;
+        const onError = async (quizId, error) => {
+          const quiz = job.results.find(q => q.quizId === quizId);
+          if (!quiz) throw new Error('RESULT_SCOPE_MISMATCH');
+          const code = safeCode(error);
+          if (quiz.error !== code) event(job, 'error', { quizId, round: n + 1, error: code });
+          quiz.error = code; quiz.status = 'error';
+          if (Array.isArray(error.unresolvedQuestions)) quiz.unresolvedQuestions = error.unresolvedQuestions.map(q => ({
+            slot: String(q.slot), reason: String(q.reason), provider: q.provider || null }));
+          if (code === 'LOGIN_REQUIRED') moodle.authRequired = true;
+          await save();
+        };
         const options = { root, web, stopped: () => job.stopRequested,
-          progress: async (stage, detail = {}) => { job.current = { round: n + 1, stage, ...detail }; event(job, 'stage', job.current); await save(); },
+          onError,
+          progress: async (stage, detail = {}) => {
+            job.current = { round: n + 1, stage, ...detail }; event(job, 'stage', job.current);
+            if (detail.attemptUsage) {
+              const quiz = overview?.courses.flatMap(c => c.quizzes).find(q => q.quizId === detail.quizId);
+              if (quiz) { quiz.attemptUsage = detail.attemptUsage; quiz.activeAttempt = detail.activeAttempt; quiz.detailCheckedAt = new Date().toISOString(); }
+              if (quiz) {
+                const course = overview.courses.find(c => c.quizzes.includes(quiz));
+                course.summary = courseSummary(course.quizzes);
+                overview.summary = courseSummary(overview.courses.flatMap(c => c.quizzes));
+              }
+              if (quiz && !scanTask) await saveReport();
+            }
+            await save();
+          },
           onResult: async result => {
             const quiz = job.results.find(q => q.quizId === result.quizId);
             quiz.attempts.push(result);
@@ -111,10 +138,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           return out;
         })() : await batchRunner(moodle, store, pending.map(q => q.quizId), options);
         for (const { quizId, error } of outcomes) if (error) {
-          const quiz = job.results.find(q => q.quizId === quizId);
-          quiz.error = safeCode(error); quiz.status = 'error';
-          event(job, 'error', { quizId, round: n + 1, error: quiz.error });
-          if (quiz.error === 'LOGIN_REQUIRED') moodle.authRequired = true;
+          await onError(quizId, error);
         }
         await save();
       }
@@ -196,7 +220,8 @@ export function serviceServer(service, token, port) {
       if (url.pathname === '/jobs') return reply(202, await service.start(input));
       if (url.pathname === '/stop') return reply(200, await service.stop(input.requestId));
       if (input.detailed !== undefined && typeof input.detailed !== 'boolean') return reply(400, { error: 'INVALID_REFRESH' });
-      service.refresh({ detailed: input.detailed === true }); return reply(202, { running: true });
+      if (input.attemptsOnly !== undefined && typeof input.attemptsOnly !== 'boolean') return reply(400, { error: 'INVALID_REFRESH' });
+      service.refresh({ detailed: input.detailed === true, attemptsOnly: input.attemptsOnly === true }); return reply(202, { running: true });
     } catch (error) { reply(409, { error: safeCode(error) }); }
   });
 }

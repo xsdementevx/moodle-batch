@@ -7,6 +7,19 @@ const source = 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20';
 const html = (content, kind = 'review') => `<!doctype html><body id="page-mod-quiz-${kind}" data-course-id="10" data-quiz-id="20" data-user-scope="u1">${content}</body>`;
 const choice = (state = 'incorrect') => `<div class="que multichoice ${state}" id="question-100-1"><div class="formulation"><div class="qtext">Choose<br>a sample.</div><div class="answer"><div class="r0"><input type="radio" name="q100:1_answer" id="a" value="0" checked disabled aria-labelledby="label-a"><div id="label-a"><span class="answernumber">a.</span>Alpha</div></div><div class="r1"><input type="radio" name="q100:1_answer" id="b" value="1" disabled><label for="b"><span class="answernumber">b.</span>Beta</label></div></div><input name="q100:1_:sequencecheck" value="2"></div><input type="checkbox" name="q100:1_:flagged" checked><div class="rightanswer">Правильный ответ: Beta</div></div>`;
 
+test('attempt limits and used attempts come from quiz metadata, never from question text', async () => {
+  const parser = await openParser();
+  const url = 'https://moodle.example/mod/quiz/view.php?id=20';
+  const content = info => html(`<div class="quizinfo">${info}</div><table class="quizattemptsummary"><thead><tr><th>Попытка</th><th>Состояние</th></tr></thead><tbody><tr><td>1</td><td>Завершено</td></tr><tr><th>2</th><td>В процессе</td></tr></tbody></table>`, 'view');
+  try {
+    assert.deepEqual((await parser.parse(content('Разрешено попыток: 3'), url)).attemptUsage, { used: 2, allowed: 3, unlimited: false, remaining: 1 });
+    assert.equal((await parser.parse(content('Attempts allowed: 2'), url)).attemptUsage.remaining, 0);
+    assert.equal((await parser.parse(content('Разрешено попыток: Неограниченно'), url)).attemptUsage.unlimited, true);
+    assert.equal((await parser.parse(content(''), url)).attemptUsage.allowed, null);
+    assert.deepEqual((await parser.parse(html('<div class="qtext">Разрешено попыток: 9</div>', 'view'), url)).attemptUsage, { used: 0, allowed: null, unlimited: false, remaining: null });
+  } finally { await parser.close(); }
+});
+
 test('cookie exports are normalized locally and unrelated host cookies are excluded', () => {
   const cookie = { name: 'MoodleSession', value: 'synthetic', domain: 'moodle.example', sameSite: 'no_restriction', secure: true, expirationDate: 9999999999 };
   const state = cookieState([cookie, { ...cookie, domain: 'other.example' }], 'https://moodle.example');

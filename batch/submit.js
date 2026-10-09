@@ -55,7 +55,13 @@ export function buildSubmission(test, questions) {
     if (!original || questionKey(original) !== questionKey(q) || q.attemptId !== test.attemptId || q.quizId !== test.quizId
         || q.userScope !== test.userScope || q.courseId !== test.courseId || q.origin !== test.origin) throw new Error('SUBMISSION_SCOPE_MISMATCH');
     if (q.behaviour !== 'deferredfeedback') throw new Error('UNSUPPORTED_QUESTION_BEHAVIOUR');
-    if (['conflict', 'unsupported'].includes(q.memory?.status) || !['confirmed', 'candidate'].includes(q.decision?.status)) throw new Error('UNRESOLVED_SUBMISSION');
+    if (['conflict', 'unsupported'].includes(q.memory?.status) || !['confirmed', 'candidate'].includes(q.decision?.status)) {
+      const error = new Error('UNRESOLVED_SUBMISSION');
+      error.unresolvedQuestions = questions.filter(item => ['conflict', 'unsupported'].includes(item.memory?.status)
+        || !['confirmed', 'candidate'].includes(item.decision?.status)).map(item => ({ slot: item.slot,
+        reason: item.decision?.reviewReason || item.memory?.status || 'unresolved', provider: item.decision?.provider || null }));
+      throw error;
+    }
     if (isExcludedAnswer(q, q.decision.answer)) throw new Error('EXCLUDED_SUBMISSION_ANSWER');
     const sequence = /^q(\d+):(\d+)_:sequencecheck$/u.exec(q.sequenceFieldName || '');
     if (!sequence || sequence[2] !== q.slot || !/^\d+$/u.test(q.sequenceValue || '')) throw new Error('INVALID_SEQUENCE_CHECK');

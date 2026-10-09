@@ -14,6 +14,7 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
         || page.courseId !== view.courseId) throw new Error('PAGE_SCOPE_MISMATCH');
   };
   validate(view);
+  await progress('reading', { attemptUsage: view.attemptUsage, activeAttempt: Boolean(view.activeUrl) });
   for (const href of view.reviews) {
     check();
     const url = new URL(href); url.searchParams.set('showall', '1');
@@ -25,15 +26,23 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
   check();
   await progress('starting');
   const started = await startTest(moodle, view, join(root, 'operations', `${startId(view)}.json`));
+  if (view.attemptUsage) {
+    const used = view.attemptUsage.used == null ? null : view.attemptUsage.used + (view.activeUrl ? 0 : 1);
+    await progress('starting', { activeAttempt: true, attemptUsage: { ...view.attemptUsage, used,
+      remaining: view.attemptUsage.allowed !== null && used !== null ? Math.max(0, view.attemptUsage.allowed - used) : null } });
+  }
   check();
   const test = await moodle.collect(started.attemptUrl);
   validate(test);
   if (test.kind !== 'attempt' || !test.complete) throw new Error('ACTIVE_COMPLETE_ATTEMPT_REQUIRED');
   await progress('context', { attemptId: test.attemptId, total: test.questions.length });
-  const context = await contextLoader(moodle, view, join(root, 'materials'));
+  const questions = test.questions.map(q => ({ ...q, memory: store.lookup(q) }));
+  const context = questions.some(q => q.memory.status === 'unresolved')
+    ? await contextLoader(moodle, view, join(root, 'materials'))
+    : { status: 'skipped', reason: 'NO_UNRESOLVED_QUESTIONS', materials: [], text: '', contextHash: null };
   check();
   await progress('solving', { context: context.status });
-  return { test, view, context, questions: test.questions.map(q => ({ ...q, memory: store.lookup(q) })) };
+  return { test, view, context, questions };
 }
 
 export async function finishQuiz(moodle, store, prepared, questions, { root, progress = async () => {}, stopped = () => false } = {}) {
@@ -58,7 +67,10 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, pro
   let gradePercent = null;
   try { gradePercent = (await moodle.grades(view.courseId)).find(q => q.quizId === quizId)?.percent ?? null; }
   catch { /* preserve the attempt result when gradebook access is unavailable */ }
-  return { quizId, courseId: view.courseId, attemptId: test.attemptId, reviewUrl: submission.reviewUrl, grade, percent, gradePercent,
+  const usage = view.attemptUsage;
+  const used = usage?.used == null ? null : usage.used + (view.activeUrl ? 0 : 1);
+  const attemptUsage = usage ? { ...usage, used, remaining: usage.allowed !== null && used !== null ? Math.max(0, usage.allowed - used) : null } : null;
+  return { quizId, courseId: view.courseId, attemptId: test.attemptId, reviewUrl: submission.reviewUrl, grade, percent, gradePercent, attemptUsage,
     total: review.questions.length, correct: review.questions.filter(q => q.feedback === 'correct').length,
     sources: questions.map(q => ({ slot: q.slot, provider: q.decision?.provider,
       ...(q.decision?.cached ? { cached: true } : {}),
@@ -76,15 +88,16 @@ export async function runQuiz(moodle, store, quizId, options = {}) {
 // One preparation/solve round across all selected tests; native submissions stay separate.
 export async function runQuizzes(moodle, store, quizIds, options = {}) {
   const prepared = [], results = [];
+  const failed = async (quizId, error) => { results.push({ quizId, error }); await options.onError?.(quizId, error); };
   const progress = (quizId, stage, detail = {}) => options.progress?.(stage, { quizId, ...detail });
   for (const quizId of quizIds) {
     if (options.stopped?.()) break;
     try { prepared.push(await prepareQuiz(moodle, store, quizId, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) })); }
-    catch (error) { results.push({ quizId, error }); }
+    catch (error) { await failed(quizId, error); }
   }
   // A pending request stops its own test, while other tests retain shared batching.
   const blocked = await pendingModelTests(prepared.flatMap(p => p.questions), join(options.root, 'operations'));
-  for (const quizId of blocked) results.push({ quizId, error: new Error('UNKNOWN_MODEL_OUTCOME') });
+  for (const quizId of blocked) await failed(quizId, new Error('UNKNOWN_MODEL_OUTCOME'));
   const eligible = prepared.filter(p => !blocked.has(p.test.quizId));
   if (!eligible.length) return results;
   const documents = Object.fromEntries(eligible.map(p => [p.test.quizId, p.context]));
@@ -98,17 +111,18 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
       { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress });
   } catch (error) {
     console.error('Moodle Batch solver:', error.name, String(error.message).split('\n')[0].slice(0, 180));
-    return [...results, ...eligible.map(p => ({ quizId: p.test.quizId, error }))];
+    for (const p of eligible) await failed(p.test.quizId, error);
+    return results;
   }
   for (const p of eligible) {
     const quizId = p.test.quizId;
-    if (options.stopped?.()) { results.push({ quizId, error: new Error('STOPPED') }); continue; }
+    if (options.stopped?.()) { await failed(quizId, new Error('STOPPED')); continue; }
     try {
       const native = solved.filter(q => q.quizId === quizId).map(({ nativeSlot, contextId, ...q }) => ({ ...q, slot: nativeSlot }));
       const result = await finishQuiz(moodle, store, p, native, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) });
       results.push({ quizId, result });
       await options.onResult?.(result);
-    } catch (error) { results.push({ quizId, error }); }
+    } catch (error) { await failed(quizId, error); }
   }
   return results;
 }

@@ -137,4 +137,10 @@ test('quick grade refresh skips attempt pages and detailed refresh skips importe
   await scanOverview(moodle, store, { previous: quick });
   assert.deepEqual(calls, ['discover', 'view', '2']);
   assert.equal(imports, 3, 'latest result stays fresh; old imported result is skipped');
+  calls.length = 0;
+  const limits = await scanOverview(moodle, store, { previous: quick, attemptsOnly: true });
+  assert.deepEqual(calls, ['view'], 'attempt counters need no course rediscovery or review downloads');
+  assert.equal(imports, 3);
+  assert.equal(limits.progress.tests, 1);
+  assert.equal(limits.courses[0].quizzes[0].analysis.known, 1, 'saved answer analysis is preserved');
 });
