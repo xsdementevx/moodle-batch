@@ -115,7 +115,7 @@ export async function selectWebReasoning(page, target = 'high') {
 export function parseConversation(messages, questions, requestId, parentRequestId) {
   const parents = parentRequestId ? [parentRequestId].flat() : [];
   const users = messages.filter(m => m.role === 'user');
-  const finals = messages.filter(m => m.role === 'assistant' && m.endTurn && typeof m.text === 'string');
+  const finals = messages.filter(m => m.role === 'assistant' && m.endTurn && typeof m.text === 'string' && m.text.trim());
   const turns = parents.length + 1;
   if (users.length !== turns || !users.at(-1).text?.includes(requestId) || finals.length !== turns
       || parents.some((id, i) => !users[i].text?.includes(id))) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');

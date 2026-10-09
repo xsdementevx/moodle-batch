@@ -70,6 +70,7 @@ test('conversation parser validates identity, final answer and actual web tool e
   const answers = parseConversation(messages, [q('1')], 'nonce');
   assert.equal(answers[0].status, 'candidate');
   assert.equal(answers[0].searchObserved, true);
+  assert.deepEqual(parseConversation([...messages, { role: 'assistant', endTurn: true, text: '  ' }], [q('1')], 'nonce'), answers);
   assert.equal(parseConversation(messages.filter(m => m.role !== 'tool'), [q('1')], 'nonce')[0].status, 'needs_review');
   assert.throws(() => parseConversation(messages, [q('1')], 'foreign'), /FOREIGN_CONVERSATION/);
   assert.throws(() => parseConversation([...messages, messages[3]], [q('1')], 'nonce'), /FOREIGN_CONVERSATION/);
