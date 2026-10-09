@@ -64,12 +64,14 @@ test('collector follows all pages once and requires complete inventory and uncha
 test('revealed matching pairs retain punctuation and shuffled row numbers, reject incomplete or ambiguous feedback', async () => {
   const parser = await openParser();
   const store = openAnswers(':memory:');
-  const rows = ['2.', '1.'].map((label, i) => `<tr><td class="text">${label}</td><td><select name="q100:1_sub${i}" disabled><option value="0">Choose</option><option value="1" selected>Alpha, beta</option><option value="2">Gamma → delta</option></select></td></tr>`).join('');
+  const rows = ['2.', '1.'].map((label, i) => `<tr><td class="text">${label}</td><td class="control ${i ? 'correct' : 'incorrect'}"><select name="q100:1_sub${i}" disabled><option value="0">Choose</option><option value="1" selected>Alpha, beta</option><option value="2">Gamma → delta</option></select></td></tr>`).join('');
   const document = right => html(`<div class="que match partiallycorrect" id="question-100-1"><div class="qtext">Order events</div><table class="answer">${rows}</table><div class="rightanswer">Правильный ответ: ${right}</div></div>`);
   try {
     const q = (await parser.parse(document('2. → Gamma → delta, 1. → Alpha, beta'), source)).questions[0];
     const expected = { [q.rows[0].id]: optionId('Gamma → delta'), [q.rows[1].id]: optionId('Alpha, beta') };
     assert.deepEqual(q.revealedAnswer, expected);
+    assert.equal(q.rows[0].feedback, 'incorrect');
+    assert.equal(q.rows[1].feedback, 'correct');
     store.importReview([q]);
     assert.deepEqual(store.lookup(q).answer, expected);
     for (const right of ['2. → Gamma → delta', '1. → Alpha, beta, 2. → Gamma → delta', '2. → Unknown, 1. → Alpha, beta']) {

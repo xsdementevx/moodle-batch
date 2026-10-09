@@ -45,6 +45,15 @@ function decodeAnswer(question, signature) {
   return question.type === 'matching' ? Object.fromEntries(answer) : answer;
 }
 
+export function isExcludedAnswer(question, answer) {
+  const signature = answerSignature(question, answer);
+  return Boolean(question.memory?.excludedAnswers?.some(item => answerSignature(question, item) === signature)
+    || (question.type === 'matching' && question.rows.some(row => {
+      const memory = question.memory?.matchingRows?.[row.id];
+      return memory && ((memory.answer && memory.answer !== answer[row.id]) || memory.excludedAnswers.includes(answer[row.id]));
+    })));
+}
+
 export function openAnswers(path) {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 5000 });
@@ -58,7 +67,7 @@ export function openAnswers(path) {
     ON CONFLICT(question_key, quiz_id, attempt_id, slot, evidence) DO UPDATE SET
     answer=excluded.answer, outcome=excluded.outcome, snapshot=excluded.snapshot, source_url=excluded.source_url
     WHERE excluded.outcome != 'unconfirmed' OR observations.outcome = 'unconfirmed'`);
-  const read = db.prepare('SELECT answer, outcome FROM observations WHERE question_key = ?');
+  const read = db.prepare('SELECT answer, outcome, evidence FROM observations WHERE question_key = ?');
   return {
     importReview(questions) {
       let imported = 0;
@@ -82,6 +91,14 @@ export function openAnswers(path) {
               item.outcome, JSON.stringify(question), question.sourceUrl);
             imported++;
           }
+          if (question.type === 'matching') for (const row of question.rows) {
+            if (!['correct', 'incorrect'].includes(row.feedback)) continue;
+            const selected = row.options.filter(o => o.value === row.selectedValue);
+            if (selected.length !== 1 || selected[0].id !== question.answer?.[row.id]) continue;
+            insert.run(key, question.quizId, question.attemptId, String(question.slot), `row:${row.id}`,
+              JSON.stringify(selected[0].id), row.feedback, JSON.stringify(question), question.sourceUrl);
+            imported++;
+          }
         }
         db.exec('COMMIT');
       } catch (error) { db.exec('ROLLBACK'); throw error; }
@@ -90,15 +107,31 @@ export function openAnswers(path) {
     lookup(question) {
       let key;
       try { key = questionKey(question); } catch { return { status: 'unsupported', answer: null, excludedAnswers: [], observations: 0 }; }
-      const records = read.all(key);
+      const all = read.all(key);
+      const records = all.filter(r => !r.evidence.startsWith('row:'));
       const positive = [...new Set(records.filter(r => r.outcome === 'correct').map(r => r.answer))];
       const negative = [...new Set(records.filter(r => ['incorrect', 'partiallycorrect'].includes(r.outcome)).map(r => r.answer))];
-      const conflict = positive.length > 1 || positive.some(answer => negative.includes(answer));
+      let conflict = positive.length > 1 || positive.some(answer => negative.includes(answer));
+      const matchingRows = {};
+      if (question.type === 'matching') for (const row of question.rows) {
+        const observations = all.filter(r => r.evidence === `row:${row.id}`);
+        const correct = [...new Set([...observations.filter(r => r.outcome === 'correct').map(r => JSON.parse(r.answer)),
+          ...positive.map(signature => decodeAnswer(question, signature)[row.id])])];
+        const wrong = [...new Set(observations.filter(r => r.outcome === 'incorrect').map(r => JSON.parse(r.answer)))];
+        if (correct.length > 1 || correct.some(id => wrong.includes(id))) conflict = true;
+        if (correct.length || wrong.length) matchingRows[row.id] = { answer: correct.length === 1 ? correct[0] : null, excludedAnswers: wrong };
+      }
+      if (!conflict && question.type === 'matching' && question.rows.every(row => matchingRows[row.id]?.answer)) {
+        const signature = answerSignature(question, Object.fromEntries(question.rows.map(row => [row.id, matchingRows[row.id].answer])));
+        if (negative.includes(signature)) conflict = true;
+        else if (!positive.includes(signature)) positive.push(signature);
+      }
       return {
         status: conflict ? 'conflict' : positive.length === 1 ? 'known' : 'unresolved',
         answer: !conflict && positive.length === 1 ? decodeAnswer(question, positive[0]) : null,
         excludedAnswers: conflict ? [] : negative.map(signature => decodeAnswer(question, signature)),
-        observations: records.length,
+        observations: all.length,
+        ...(Object.keys(matchingRows).length ? { matchingRows: conflict ? {} : matchingRows } : {}),
       };
     },
     close() { db.close(); },

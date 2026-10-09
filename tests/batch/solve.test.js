@@ -19,6 +19,22 @@ const q = (slot, extra = {}) => ({ origin: 'https://moodle.example', userScope: 
 const response = (packet, choice = 'o0') => ({ model: 'jev-1.13.0', answers: Object.fromEntries(Object.entries(packet.payload.questions).map(([id, spec]) => [id,
   { type: 'choice', choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(spec.criteria).map(key => [key, key === choice ? 1 : 0])) }])) });
 
+test('both providers receive matching row memory and reject a different whole mapping with a known wrong pair', () => {
+  const rows = ['First', 'Second'].map(text => ({ text, id: digest(['row-v1', text, options.map(o => o.text).sort()]), options }));
+  const question = q('1', { type: 'matching', options: [], rows, memory: { status: 'unresolved', excludedAnswers: [],
+    matchingRows: { [rows[0].id]: { answer: null, excludedAnswers: [options[0].id] } } } });
+  const packet = jevPacket([question], 'Course context');
+  assert.equal(packet.payload.questions.q1_r0.instructions.excludedMatchingRows[0].answers[0], 'Alpha');
+  assert.equal(parseJev(packet, response(packet)).size, 0);
+  const input = JSON.parse(webPrompt([question], { text: 'Course context' }, 'nonce').split('\n').at(-1));
+  assert.deepEqual(input.questions[0].matchingMemory, question.memory.matchingRows);
+  const answer = Object.fromEntries(rows.map(row => [row.id, options[0].id]));
+  const parsed = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer, needsReview: false, sourceUrls: [] }] }), [question], 'nonce', []);
+  assert.equal(parsed[0].status, 'needs_review');
+  assert.equal(parsed[0].reviewReason, 'excluded_answer');
+  assert.notEqual(questionFingerprint(question, {}), questionFingerprint({ ...question, memory: { ...question.memory, matchingRows: undefined } }, {}));
+});
+
 test('legacy short-answer wording rules preserve source words, strip repeated units, and enforce exclusions after normalization', () => {
   const question = q('1', { type: 'text', textFormat: 'shortanswer', text: 'Длительные свидания продолжительностью … суток', options: [] });
   assert.equal(normalizeShortAnswerForQuestion(question.text, 'трое суток'), 'трое');

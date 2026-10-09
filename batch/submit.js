@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { answerSignature, digest, questionKey } from './answers.js';
+import { digest, questionKey, isExcludedAnswer } from './answers.js';
 import { checkpointed } from './solve.js';
 
 export function buildStart(view) {
@@ -56,8 +56,7 @@ export function buildSubmission(test, questions) {
         || q.userScope !== test.userScope || q.courseId !== test.courseId || q.origin !== test.origin) throw new Error('SUBMISSION_SCOPE_MISMATCH');
     if (q.behaviour !== 'deferredfeedback') throw new Error('UNSUPPORTED_QUESTION_BEHAVIOUR');
     if (['conflict', 'unsupported'].includes(q.memory?.status) || !['confirmed', 'candidate'].includes(q.decision?.status)) throw new Error('UNRESOLVED_SUBMISSION');
-    const signature = answerSignature(q, q.decision.answer);
-    if (q.memory?.excludedAnswers.some(answer => answerSignature(q, answer) === signature)) throw new Error('EXCLUDED_SUBMISSION_ANSWER');
+    if (isExcludedAnswer(q, q.decision.answer)) throw new Error('EXCLUDED_SUBMISSION_ANSWER');
     const sequence = /^q(\d+):(\d+)_:sequencecheck$/u.exec(q.sequenceFieldName || '');
     if (!sequence || sequence[2] !== q.slot || !/^\d+$/u.test(q.sequenceValue || '')) throw new Error('INVALID_SEQUENCE_CHECK');
     const prefix = `q${sequence[1]}:${q.slot}_`;

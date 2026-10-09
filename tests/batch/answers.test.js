@@ -3,12 +3,43 @@ import { test } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { digest, openAnswers, optionId, questionKey, answerSignature } from '../../batch/answers.js';
+import { digest, openAnswers, optionId, questionKey, answerSignature, isExcludedAnswer } from '../../batch/answers.js';
 
 const options = ['Alpha', 'Beta', 'Gamma'].map(text => ({ text, id: optionId(text) }));
 const question = (extra = {}) => ({ origin: 'https://moodle.example', userScope: 'u1', courseId: '10', quizId: '20',
   attemptId: '30', slot: '1', pageKind: 'review', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20',
   type: 'choice', text: 'Choose a sample answer.', options, rows: [], answer: [options[0].id], feedback: 'correct', ...extra });
+
+test('matching row observations survive hidden feedback, aggregate across attempts and reject conflicts', () => {
+  const store = openAnswers(':memory:');
+  const rowOptions = options.map((o, i) => ({ ...o, value: String(i + 1) }));
+  const rows = ['First', 'Second'].map((text, i) => ({ text, id: digest(['row-v1', text, options.map(o => o.text).sort()]),
+    options: rowOptions, selectedValue: '1', feedback: i ? 'incorrect' : 'correct' }));
+  const answer = Object.fromEntries(rows.map(row => [row.id, options[0].id]));
+  const q = question({ type: 'matching', options: [], rows, answer, feedback: 'partiallycorrect' });
+  try {
+    store.importReview([q]);
+    const memory = store.lookup(q);
+    assert.equal(memory.status, 'unresolved');
+    assert.equal(memory.matchingRows[rows[0].id].answer, options[0].id);
+    assert.deepEqual(memory.matchingRows[rows[1].id].excludedAnswers, [options[0].id]);
+    const blocked = { ...answer, [rows[0].id]: options[1].id, [rows[1].id]: options[2].id };
+    assert.equal(isExcludedAnswer({ ...q, memory }, blocked), true);
+    assert.equal(isExcludedAnswer({ ...q, memory }, { ...answer, [rows[1].id]: options[1].id }), false);
+    store.importReview([{ ...q, feedback: 'unconfirmed', rows: rows.map(r => ({ ...r, feedback: 'unconfirmed' })) }]);
+    assert.deepEqual(store.lookup(q).matchingRows, memory.matchingRows);
+    const next = { ...q, attemptId: '31', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=31'),
+      rows: rows.map((r, i) => ({ ...r, selectedValue: i ? '2' : '1', feedback: i ? 'correct' : 'unconfirmed' })),
+      answer: { ...answer, [rows[1].id]: options[1].id }, feedback: 'unconfirmed' };
+    store.importReview([next]);
+    assert.equal(store.lookup({ ...q, rows: [...rows].reverse() }).status, 'known');
+    assert.deepEqual(store.lookup(q).answer, next.answer);
+    store.importReview([{ ...next, attemptId: '32', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=32'),
+      rows: next.rows.map(r => ({ ...r, feedback: 'incorrect' })) }]);
+    assert.equal(store.lookup(q).status, 'conflict');
+    assert.equal(store.lookup(q).answer, null);
+  } finally { store.close(); }
+});
 
 test('duplicate wrong choice labels allow a unique answer; selecting an ambiguous label is rejected', () => {
   const store = openAnswers(':memory:');

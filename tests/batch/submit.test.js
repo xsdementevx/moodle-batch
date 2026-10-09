@@ -64,6 +64,12 @@ test('one final request maps stable answers to native fields and rejects unresol
   assert.equal(plan.fields['q100:3_sub0'], '2');
   assert.equal(plan.fields['q100:4_answer'], 'Term');
   assert.equal(plan.fields['q100:4_:sequencecheck'], '2');
+  const rowBlocked = structuredClone(attempt);
+  const row = rowBlocked.questions[2].rows[0];
+  rowBlocked.questions[2].memory.matchingRows = { [row.id]: { answer: null, excludedAnswers: [row.options[1].id] } };
+  assert.throws(() => buildSubmission(rowBlocked, rowBlocked.questions), /EXCLUDED_SUBMISSION_ANSWER/);
+  rowBlocked.questions[2].memory.matchingRows[row.id] = { answer: row.options[0].id, excludedAnswers: [] };
+  assert.throws(() => buildSubmission(rowBlocked, rowBlocked.questions), /EXCLUDED_SUBMISSION_ANSWER/);
   assert.throws(() => buildSubmission({ ...attempt, kind: 'review' }, attempt.questions), /ACTIVE_COMPLETE_ATTEMPT/);
   const bad = structuredClone(attempt);
   bad.questions[0].decision.status = 'needs_review';

@@ -166,6 +166,7 @@ export async function openParser() {
             text: cleanText(select.closest('tr')?.querySelector('.text')), fieldName: select.name,
             options: [...select.options].filter(o => o.value !== '' && o.value !== '0').map(o => ({ text: norm(o.textContent), value: o.value })),
             selectedValue: select.value,
+            feedback: ['correct', 'incorrect'].find(state => select.closest('.control')?.classList.contains(state)) || 'unconfirmed',
           }));
           if (unsupportedReason) type = 'unsupported';
           const control = q.querySelector('input[name$="_:sequencecheck"]');
