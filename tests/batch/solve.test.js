@@ -174,6 +174,12 @@ test('Web validates request identity, coverage, answers and observed source link
     assert.equal(parseWeb(wrapped, [question], 'nonce', result.answers[0].sourceUrls)[0].status, 'candidate');
   }
   assert.throws(() => parseWeb(`<CodeBlock>${JSON.stringify(result)}</CodeBlock> trailing prose`, [question], 'nonce', []), /INVALID_WEB_JSON/);
+  const unicode = 'https://source.example/Документ_(тест)';
+  const encoded = 'https://source.example/%D0%94%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82_%28%D1%82%D0%B5%D1%81%D1%82%29';
+  const linked = url => JSON.stringify({ ...result, answers: [{ ...result.answers[0], sourceUrls: [url] }] });
+  assert.equal(parseWeb(linked(unicode), [question], 'nonce', [encoded])[0].status, 'candidate');
+  assert.equal(parseWeb(linked('https://source.example/a/b'), [question], 'nonce', ['https://source.example/a%2Fb'])[0].status, 'needs_review');
+  assert.equal(parseWeb(linked('https://source.example/a?x=1'), [question], 'nonce', ['https://source.example/a?x=2'])[0].status, 'needs_review');
   assert.throws(() => parseWeb(JSON.stringify(result), [question], 'different', []), /INCOMPLETE_WEB_RESPONSE/);
   assert.throws(() => parseWeb(JSON.stringify(result), [q('1', { memory: { excludedAnswers: [[options[1].id]] } })], 'nonce', []), /EXCLUDED_WEB_ANSWER/);
   assert.ok(!webPrompt([question], { text: '' }, 'nonce').includes('sequencecheck'));

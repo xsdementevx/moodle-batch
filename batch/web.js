@@ -43,10 +43,12 @@ export function parseWeb(text, questions, requestId, citations) {
   try { result = JSON.parse(cleaned); } catch { throw new Error('INVALID_WEB_JSON'); }
   if (result.requestId !== requestId || !Array.isArray(result.answers) || result.answers.length !== questions.length
       || new Set(result.answers.map(a => a.slot)).size !== questions.length) throw new Error('INCOMPLETE_WEB_RESPONSE');
+  const sourceKey = value => { try { const url = new URL(value); url.hash = ''; return decodeURI(url.href); } catch { return null; } };
+  const observed = new Set(citations.map(sourceKey).filter(Boolean));
   return questions.map(q => {
     const item = result.answers.find(a => a.slot === q.slot);
     if (!item || typeof item.needsReview !== 'boolean' || !Array.isArray(item.sourceUrls)) throw new Error('INVALID_WEB_RESPONSE');
-    const sourceUrls = item.sourceUrls.filter(url => citations.includes(url));
+    const sourceUrls = item.sourceUrls.filter(url => sourceKey(url) && observed.has(sourceKey(url)));
     if (Object.hasOwn(item, 'confidence') && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) throw new Error('INVALID_WEB_RESPONSE');
     if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < 0.85)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls, verifiedByMoodle: false };
     // Validate the model's type before applying the legacy short-answer rules.
