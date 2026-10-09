@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -118,6 +118,28 @@ test('extension reuses one attachment, closes its own pages and detaches without
   for (let i = 0; i < 2; i++) await assert.rejects(solve([], {}, { journalPath: journal }), /FIXTURE_NAVIGATION_FAILURE/u);
   await solve.close();
   assert.deepEqual(events, ['connect', 'own-page-close', 'own-page-close', 'detach']);
+});
+
+test('completed evidence arrays are rechecked after a reader upgrade but model uncertainty stays unresolved', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-recheck-'));
+  const journalPath = join(dir, 'complete.json');
+  const quote = 'The exact verified course statement provides the answer.';
+  const evidence = [{ kind: 'context', quote, optionIds: ['one'] }];
+  const answers = [
+    { slot: '1', type: 'multiple', answer: ['one'], status: 'needs_review', reviewReason: 'source_quote_not_found', sourceUrls: [], evidence },
+    { slot: '2', answer: ['one'], status: 'needs_review', reviewReason: 'model_uncertain', sourceUrls: [], evidence },
+  ];
+  try {
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 3, answers } }));
+    const solve = webSolver({ extension: true, connect: () => assert.fail('rechecking evidence must not dispatch to ChatGPT') });
+    const result = await solve([{ slot: '1', type: 'multiple' }, { slot: '2' }], { text: quote }, { journalPath });
+    assert.equal(result[0].evidenceVerified, true);
+    assert.equal(result[0].status, 'candidate');
+    assert.equal(result[0].reviewReason, undefined);
+    assert.equal(result[1].status, 'needs_review');
+    assert.equal(result[1].reviewReason, 'model_uncertain');
+    assert.equal(JSON.parse(await readFile(journalPath, 'utf8')).result.sourcePolicy, 5);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('a completed conversation is read without waiting on DOM, while a foreign response still fails', async () => {

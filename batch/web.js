@@ -27,6 +27,7 @@ export function webPrompt(questions, context, requestId) {
     + 'или {"kind":"web","url":"точный URL из поиска","quote":"точная цитата со страницы"}. '
     + 'Если весь ответ требует нескольких цитат, evidence может быть массивом этих объектов. Для matching добавь каждому объекту rowIds: массив ID строк, которые подтверждает цитата; вместе покрой все строки. Для multiple добавь optionIds: массив выбранных ID, которые подтверждает цитата; вместе покрой весь выбранный набор. Каждая цитата должна быть точной и проверяемой. '
     + 'Цитата минимум 20 символов, без многоточий и пересказа, должна обосновывать выбранный ответ. Для multiple обоснуй весь набор. '
+    + 'Перечень вариантов чужого теста не доказывает, какие из них правильны. Нужен содержательный фрагмент источника, утверждающий выбранный факт или объясняющий связь. '
     + 'Открой найденную страницу и прочитай её; существующая ссылка сама по себе не подтверждает ответ. Если не нашёл фактического подтверждения, needsReview=true. '
     + 'previousUnverifiedAnswer — прежний неподтверждённый вариант: проверь его заново по контексту и источнику, исправь при необходимости.\n'
     + 'reviewReason объясняет отказ проверки: excluded_answer — Moodle уже отклонил этот вариант; context_quote_not_found — цитаты нет в материале; source_not_observed — URL не найден в реальном поиске; source_quote_not_found — цитата не найдена на странице. '
@@ -264,7 +265,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
-      return { ...result, reasoning: effort, sourcePolicy: 3 };
+      return { ...result, reasoning: effort, sourcePolicy: 5 };
     } catch (error) {
       await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url() }), { mode: 0o600 });
       if (/^[A-Z_]+$/u.test(error.message || '')) throw error;
@@ -296,14 +297,16 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
     try {
       const cached = JSON.parse(await readFile(options.journalPath, 'utf8'));
       if (cached.state === 'complete') {
-        const recheck = answer => answer.status === 'needs_review' && ['web', 'context'].includes(answer.evidence?.kind) && answer.answer !== null;
-        if (cached.result.sourcePolicy !== 3 && cached.result.answers.some(recheck)) {
+        const recheck = answer => answer.status === 'needs_review' && answer.answer !== null
+          && ['source_quote_not_found', 'context_quote_not_found', 'evidence_incomplete'].includes(answer.reviewReason)
+          && (Array.isArray(answer.evidence) ? answer.evidence : [answer.evidence]).some(item => ['web', 'context'].includes(item?.kind));
+        if (cached.result.sourcePolicy !== 5 && cached.result.answers.some(recheck)) {
           const parser = await openParser();
           try {
             const checked = await verifyEvidence(cached.result.answers.filter(recheck).map(answer => ({ ...answer, status: 'candidate' })),
               questions, context, { textFromHtml: html => parser.sourceText(html) });
             cached.result.answers = cached.result.answers.map(answer => checked.find(a => a.slot === answer.slot) || answer);
-            cached.result.sourcePolicy = 3;
+            cached.result.sourcePolicy = 5;
             await writeFile(`${options.journalPath}.tmp`, JSON.stringify(cached), { mode: 0o600 });
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }

@@ -2,6 +2,9 @@ import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { normalize } from './answers.js';
 import { chromium } from 'playwright';
+import { extractMaterial } from './context.js';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Whitespace and table delimiters are presentation, not changes to the quoted facts.
 export const evidenceText = text => normalize(String(text).replace(/(?<=\p{L})[\u001f\u00ad](?=\p{L})/gu, '')
@@ -36,16 +39,23 @@ export async function readPublicSource(href) {
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       await response.body?.cancel(); href = new URL(response.headers.get('location'), url).href; continue;
     }
-    if (!response.ok || !/text\/(?:html|plain)/iu.test(response.headers.get('content-type') || '')) {
+    const pdf = /^application\/pdf(?:;|$)/iu.test(response.headers.get('content-type') || '');
+    if (!response.ok || (!pdf && !/text\/(?:html|plain)/iu.test(response.headers.get('content-type') || ''))) {
       await response.body?.cancel(); throw new Error('SOURCE_UNAVAILABLE');
     }
     const chunks = []; let size = 0;
     for await (const chunk of response.body) {
       size += chunk.length;
-      if (size > 1000000) throw new Error('SOURCE_TOO_LARGE');
+      if (size > 5000000) throw new Error('SOURCE_TOO_LARGE');
       chunks.push(chunk);
     }
-    return Buffer.concat(chunks).toString('utf8');
+    const buffer = Buffer.concat(chunks);
+    if (pdf) {
+      if (buffer.subarray(0, 5).toString() !== '%PDF-') throw new Error('SOURCE_UNAVAILABLE');
+      const material = await extractMaterial({ buffer, mime: 'application/pdf' }, join(tmpdir(), 'moodle-batch-public-pdf'));
+      return { text: material.text, format: 'pdf' };
+    }
+    return buffer.toString('utf8');
   }
   throw new Error('SOURCE_UNAVAILABLE');
 }
@@ -74,7 +84,7 @@ export async function readRenderedSource(href, quote, { launch = () => chromium.
       .replace(/\s+/gu, ' ').trim().includes(needle), evidenceText(quote), { timeout: 12000 }).catch(() => {});
     const html = await page.content();
     if (/check failed|just a moment|verify you are human/iu.test(await page.title())) throw new Error('SOURCE_UNAVAILABLE');
-    if (html.length > 1000000) throw new Error('SOURCE_TOO_LARGE');
+    if (html.length > 5000000) throw new Error('SOURCE_TOO_LARGE');
     return html;
   } finally { await context?.close(); await browser.close(); }
 }
@@ -82,6 +92,7 @@ export async function readRenderedSource(href, quote, { launch = () => chromium.
 export async function verifyEvidence(decisions, questions, context, { readSource = readPublicSource,
   renderSource = readRenderedSource, textFromHtml } = {}) {
   const pages = new Map();
+  const pdfs = new Set();
   const results = [];
   async function verifyOne(evidence, decision, question) {
     let grounded = false;
@@ -94,12 +105,13 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         if (!pages.has(evidence.url)) pages.set(evidence.url, (async () => {
           try {
             const raw = await readSource(evidence.url);
+            if (raw?.format === 'pdf') { pdfs.add(evidence.url); return evidenceText(raw.text); }
             return evidenceText(textFromHtml ? await textFromHtml(raw) : raw);
           } catch { return ''; }
         })());
         const needle = evidenceText(evidence.quote);
         grounded = (await pages.get(evidence.url)).includes(needle);
-        if (!grounded && renderSource) {
+        if (!grounded && renderSource && !pdfs.has(evidence.url)) {
           const renderKey = `render:${evidence.url}:${needle}`;
           if (!pages.has(renderKey)) pages.set(renderKey, (async () => {
             try {
@@ -135,7 +147,7 @@ export async function verifyEvidence(decisions, questions, context, { readSource
       }
     }
     results.push({ ...decision, evidenceVerified: grounded,
-      ...(!grounded ? { reviewReason: decision.reviewReason || reason } : {}),
+      reviewReason: grounded ? undefined : decision.reviewReason || reason,
       status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status });
   }
   return results;

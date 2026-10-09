@@ -34,6 +34,18 @@ test('PDF discretionary word breaks do not invalidate quotes or merge different 
   }
 });
 
+test('public PDF evidence is checked as extracted text without HTML or browser rendering', async () => {
+  const quote = 'The precise condition is x < 3 and y > 2 in the original PDF.';
+  const url = 'https://source.example/book.pdf';
+  const decision = { slot: '1', status: 'candidate', sourceUrls: [url], evidence: { kind: 'web', url, quote } };
+  const options = { readSource: async () => ({ text: quote, format: 'pdf' }),
+    textFromHtml: () => assert.fail('PDF text must not be parsed as HTML'),
+    renderSource: () => assert.fail('PDF must not open the browser PDF viewer') };
+  assert.equal((await verifyEvidence([decision], [{ slot: '1' }], {}, options))[0].evidenceVerified, true);
+  const invented = { ...decision, evidence: { ...decision.evidence, quote: 'A fabricated statement absent from this PDF document.' } };
+  assert.equal((await verifyEvidence([invented], [{ slot: '1' }], {}, options))[0].status, 'needs_review');
+});
+
 test('multiple source quotes must all be observed, exact and cover every matching row or selected option', async () => {
   const first = 'The first event happened on the verified earlier date.';
   const second = 'The second event happened on the verified later date.';
