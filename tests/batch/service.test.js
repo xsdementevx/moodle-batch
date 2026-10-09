@@ -217,6 +217,25 @@ test('installed extension recovers a lost start reply after reopening without ch
       'a definitive rejection must not become a stale retry intent');
     assert.equal(await reopened.locator('#rounds').isDisabled(), false);
     service.start = start;
+    const readState = service.state.bind(service);
+    service.state = () => {
+      const state = structuredClone(readState());
+      const course = state.overview.courses[0];
+      const quiz = course.quizzes[0];
+      course.quizzes = [{ ...quiz, percent: 100, status: 'maximum' },
+        { ...quiz, quizId: '21', percent: 95, status: 'excellent' },
+        { ...quiz, quizId: '22', percent: null, status: 'unattempted' }];
+      return state;
+    };
+    await reopened.reload();
+    await reopened.locator('.quiz').nth(2).waitFor({ state: 'attached' });
+    await reopened.locator('#low').check();
+    assert.equal(await reopened.locator('.quiz').count(), 1);
+    assert.equal(await reopened.locator('.quiz span').textContent(), '95%');
+    await reopened.locator('#select').click();
+    assert.equal(await reopened.locator('.quiz input:checked').count(), 1);
+    assert.equal(await reopened.locator('#run').isDisabled(), false);
+    assert.equal(calls, 1, 'filtering and selecting must not send an attempt');
     assert.equal(await page.locator('#responseform input').inputValue(), 'unchanged');
   } finally { await context?.close(); if (server) await new Promise(done => server.close(done)); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });

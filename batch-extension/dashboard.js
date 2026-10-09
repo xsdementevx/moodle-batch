@@ -13,6 +13,7 @@ const api = async (route, body) => {
   return result.data;
 };
 const busy = () => current?.jobs.find(job => ['queued', 'running'].includes(job.status));
+const belowMaximum = quiz => Number.isFinite(quiz.percent) && quiz.percent >= 0 && quiz.percent < 100;
 const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
 const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на компьютере.', USER_SCOPE_MISMATCH: 'Аккаунт Moodle отличается от аккаунта сервиса.',
   LOGIN_REQUIRED: 'Сессия Moodle истекла. Войдите в Moodle, обновите cookies.json и нажмите «Обновить анализ». Показаны сохранённые оценки.',
@@ -60,11 +61,11 @@ function render(overview, cached = false) {
   $('courses').replaceChildren();
   $('message').textContent = `${cached ? 'Сохранённые данные. ' : ''}Курсов ${overview.progress.courses}/${overview.progress.totalCourses}; проверено тестов ${overview.progress.tests}/${overview.progress.totalTests}.`;
   for (const course of overview.courses) {
-    const quizzes = course.quizzes.filter(q => !$('low').checked || q.status === 'retry' || selected.has(q.quizId));
+    const quizzes = course.quizzes.filter(q => !$('low').checked || belowMaximum(q) || selected.has(q.quizId));
     if (!quizzes.length) continue;
     const details = document.createElement('details'); details.dataset.course = course.courseId;
     details.open = opened.has(course.courseId) || quizzes.some(q => q.quizId === preset);
-    const summary = document.createElement('summary'); summary.textContent = `${course.title} · тестов ${course.summary.total} · ниже 90%: ${course.summary.retry}`; details.append(summary);
+    const summary = document.createElement('summary'); summary.textContent = `${course.title} · тестов ${course.summary.total} · ниже 100%: ${course.quizzes.filter(belowMaximum).length}`; details.append(summary);
     for (const q of quizzes) {
       const row = document.createElement('label'); row.className = 'quiz';
       const check = document.createElement('input'); check.type = 'checkbox'; check.checked = selected.has(q.quizId);
@@ -105,7 +106,7 @@ async function load() {
 }
 $('low').addEventListener('change', () => { if (current?.overview) render(current.overview); });
 $('select').addEventListener('click', () => {
-  for (const q of current?.overview?.courses.flatMap(course => course.quizzes) || []) if (!$('low').checked || q.status === 'retry') selected.add(q.quizId);
+  for (const q of current?.overview?.courses.flatMap(course => course.quizzes) || []) if (!$('low').checked || belowMaximum(q)) selected.add(q.quizId);
   if (current?.overview) render(current.overview);
 });
 $('clear').addEventListener('click', () => { selected.clear(); if (current?.overview) render(current.overview); });
