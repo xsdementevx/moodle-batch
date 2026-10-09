@@ -92,6 +92,25 @@ test('a rejected duplicate cannot block complete verified coverage or fill a mis
   assert.equal((await verifyEvidence([pairs], [matching], { text: quote }, options))[0].status, 'candidate');
 });
 
+test('single answers retain a verified source when an additional quote fails, without promoting uncertainty', async () => {
+  const quote = 'The commercial establishments are located in different countries.';
+  const good = { kind: 'web', url: 'https://source.example/primary', quote };
+  const bad = { kind: 'web', url: 'https://source.example/secondary', quote: 'An absent supplementary quotation of sufficient length.' };
+  const decision = { slot: '1', status: 'candidate', answer: ['one'], sourceUrls: [good.url, bad.url], evidence: [bad, good] };
+  const options = { readSource: async url => url === good.url ? quote : 'Different text.', renderSource: null };
+  for (const type of ['choice', 'text']) {
+    const verify = d => verifyEvidence([d], [{ slot: '1', type }], {}, options).then(r => r[0]);
+    const result = await verify(decision);
+    assert.equal(result.status, 'candidate');
+    assert.equal(result.evidenceVerified, true);
+    assert.deepEqual(result.evidence, [good]);
+    assert.equal(result.rejectedEvidence[0].reason, 'source_quote_not_found');
+    assert.equal((await verify({ ...decision, evidence: [bad] })).status, 'needs_review');
+    assert.equal((await verify({ ...decision, status: 'needs_review' })).evidenceVerified, false);
+    assert.equal((await verify({ ...decision, sourceUrls: [] })).status, 'needs_review');
+  }
+});
+
 test('JavaScript source rendering is isolated, permits normal same-origin loading and blocks private cross-origin reads', async () => {
   const browser = await chromium.launch();
   let isolated, privateBlocked = false;

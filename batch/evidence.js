@@ -154,6 +154,8 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         if (array && field && decision.status === 'candidate') {
           const supported = new Set(verified.flatMap(item => item[field]));
           grounded = required.length > 0 && required.every(id => supported.has(id));
+        } else if (array && ['choice', 'text'].includes(question.type) && decision.status === 'candidate') {
+          grounded = verified.length > 0;
         }
       }
     }

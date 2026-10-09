@@ -23,6 +23,7 @@ export function webPrompt(questions, context, requestId) {
     + 'Для каждого ответа sourceUrls должны содержать точные URL страниц из результатов твоего веб-поиска, которые подтверждают этот ответ. '
     + 'Если первый поиск не подтвердил ответ, ищи повторно другими формулировками; предпочитай первоисточник и точную формулировку учебного материала. '
     + 'Проверь отрицания, исключения, число требуемых вариантов и каждый элемент multiple/matching. При противоречиях сравни источники и контекст. '
+    + 'Для choice сравни каждый предложенный вариант с источником до выбора одного ID. Проверь существенные оговорки: «в первую очередь», «только», «все», «может», «как правило», «и/или». Не превращай условное правило в безусловное и не смешивай признаки понятия с условиями применения нормы. Если несколько вариантов одинаково подтверждены и контекст не позволяет выбрать единственный, needsReview=true. '
     + 'Для multiple проверь все предложенные варианты, включая невыбранные: наличие доказательства одного варианта не означает полноту набора. Если цитата перечисляет несколько подходящих вариантов, учти каждый из них. '
     + 'Не смешивай разные классификации: сначала сравни полный перечень в материале текущего курса; если он отсутствует или неоднозначен, проверь содержательные источники и явно учти расхождения. '
     + 'В matching порядок отображения строк не задаёт последовательность: ориентируйся на текст и номер каждой строки. Для хронологии назначай события номерам строк по датам, даже если строки показаны в порядке 4, 3, 1, 2. '
@@ -277,7 +278,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
-      return { ...result, reasoning: effort, sourcePolicy: 6 };
+      return { ...result, reasoning: effort, sourcePolicy: 7 };
     } catch (error) {
       await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url() }), { mode: 0o600 });
       if (/^[A-Z_]+$/u.test(error.message || '')) throw error;
@@ -312,13 +313,13 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
         const recheck = answer => answer.status === 'needs_review' && answer.answer !== null
           && ['source_quote_not_found', 'source_unavailable', 'context_quote_not_found', 'evidence_incomplete'].includes(answer.reviewReason)
           && (Array.isArray(answer.evidence) ? answer.evidence : [answer.evidence]).some(item => ['web', 'context'].includes(item?.kind));
-        if (cached.result.sourcePolicy !== 6 && cached.result.answers.some(recheck)) {
+        if (cached.result.sourcePolicy !== 7 && cached.result.answers.some(recheck)) {
           const parser = await openParser();
           try {
             const checked = await verifyEvidence(cached.result.answers.filter(recheck).map(answer => ({ ...answer, status: 'candidate' })),
               questions, context, { textFromHtml: html => parser.sourceText(html) });
             cached.result.answers = cached.result.answers.map(answer => checked.find(a => a.slot === answer.slot) || answer);
-            cached.result.sourcePolicy = 6;
+            cached.result.sourcePolicy = 7;
             await writeFile(`${options.journalPath}.tmp`, JSON.stringify(cached), { mode: 0o600 });
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }
