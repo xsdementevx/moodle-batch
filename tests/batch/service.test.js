@@ -140,6 +140,19 @@ test('shared runner submits native slots to each test and isolates an unresolved
     assert.ok(results[1].error);
     assert.equal(submitted.length, 1);
     assert.equal(results[0].result.sources[0].slot, '1');
+    const completed = [];
+    const memoryFirst = await runQuizzes(moodle, { ...store, lookup: q => q.quizId === '20'
+      ? { status: 'known', answer: [optionId('A')], excludedAnswers: [] } : store.lookup(q) }, ['20', '21'], {
+      root, contextLoader: async () => ({ status: 'missing', text: '' }),
+      onResult: result => completed.push(result.quizId),
+      solve: async questions => {
+        assert.deepEqual(completed, ['20'], 'known attempt must finish before any model work');
+        assert.deepEqual(questions.map(q => q.quizId), ['21']);
+        return questions.map(q => ({ ...q, decision: { status: 'needs_review', answer: null } }));
+      } });
+    assert.equal(memoryFirst[0].result.percent, 100);
+    assert.equal(memoryFirst[0].result.sources[0].provider, 'memory');
+    assert.equal(submitted.length, 1, 'completed native submission must not be sent again');
     const journal = join(root, 'operations', `${'a'.repeat(64)}.json`);
     await mkdir(join(root, 'operations'), { recursive: true });
     const pending = { state: 'pending', questionIds: ['20:30:1'] };

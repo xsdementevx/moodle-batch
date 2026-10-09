@@ -91,9 +91,23 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
   const prepared = [], results = [];
   const failed = async (quizId, error) => { results.push({ quizId, error }); await options.onError?.(quizId, error); };
   const progress = (quizId, stage, detail = {}) => options.progress?.(stage, { quizId, ...detail });
+  const finish = async (p, questions) => {
+    const quizId = p.test.quizId;
+    if (options.stopped?.()) { await failed(quizId, new Error('STOPPED')); return; }
+    try {
+      const result = await finishQuiz(moodle, store, p, questions, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) });
+      results.push({ quizId, result });
+      await options.onResult?.(result);
+    } catch (error) { await failed(quizId, error); }
+  };
   for (const quizId of quizIds) {
     if (options.stopped?.()) break;
-    try { prepared.push(await prepareQuiz(moodle, store, quizId, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) })); }
+    try {
+      const p = await prepareQuiz(moodle, store, quizId, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) });
+      if (p.questions.every(q => q.memory.status === 'known')) {
+        await finish(p, await solveTest(p.questions, p.context, { stopped: options.stopped }));
+      } else prepared.push(p);
+    }
     catch (error) { await failed(quizId, error); }
   }
   // A pending request stops its own test, while other tests retain shared batching.
@@ -117,13 +131,8 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
   }
   for (const p of eligible) {
     const quizId = p.test.quizId;
-    if (options.stopped?.()) { await failed(quizId, new Error('STOPPED')); continue; }
-    try {
-      const native = solved.filter(q => q.quizId === quizId).map(({ nativeSlot, contextId, ...q }) => ({ ...q, slot: nativeSlot }));
-      const result = await finishQuiz(moodle, store, p, native, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) });
-      results.push({ quizId, result });
-      await options.onResult?.(result);
-    } catch (error) { await failed(quizId, error); }
+    const native = solved.filter(q => q.quizId === quizId).map(({ nativeSlot, contextId, ...q }) => ({ ...q, slot: nativeSlot }));
+    await finish(p, native);
   }
   return results;
 }
