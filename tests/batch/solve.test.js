@@ -368,6 +368,10 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
       const copy=document.createElement('button');copy.dataset.testid='copy-turn-action-button';document.body.append(copy);}
       </script>` }));
     await page.goto('https://chatgpt.com/');
+    await page.evaluate(() => {
+      const editor = document.querySelector('[role=textbox]'); editor.textContent = 'Restoring editor';
+      setTimeout(() => { editor.textContent = ''; }, 100);
+    });
     const material = { text: 'Sample material supports Alpha.' };
     const answer = await dispatchWeb(page, [q('1')], material, { requestId: 'nonce', journalPath: join(dir, 'web.json'), reasoning: 'current' });
     assert.equal(answer[0].status, 'candidate');
@@ -378,6 +382,11 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
         parentRequestId: parents, journalPath: join(dir, `${id}.json`), reasoning: 'current' });
       assert.equal(followup[0].evidenceVerified, true);
     }
+    assert.equal(await page.evaluate(() => window.dispatches), 3);
+    await page.locator('[role="textbox"]').fill('A real user draft');
+    await assert.rejects(dispatchWeb(page, [q('1')], material, { requestId: 'fourth',
+      parentRequestId: ['nonce', 'second', 'third'], journalPath: join(dir, 'fourth.json'), reasoning: 'current' }), /GPT_WEB_FOREIGN_DRAFT/);
+    assert.equal(await page.locator('[role="textbox"]').innerText(), 'A real user draft');
     assert.equal(await page.evaluate(() => window.dispatches), 3);
   } finally { await browser.close(); await rm(dir, { recursive: true, force: true }); }
 });

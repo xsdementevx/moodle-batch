@@ -200,6 +200,11 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   const count = await users.count();
   if (count !== parents.length) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
   for (let i = 0; i < parents.length; i++) if (!(await users.nth(i).innerText()).includes(parents[i])) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
+  // Hydration can briefly restore stale editor text before loading the empty draft.
+  try { await page.waitForFunction(() => {
+    const editor = document.querySelector('#prompt-textarea,[role="textbox"][contenteditable="true"]');
+    return editor && !editor.innerText.trim();
+  }, undefined, { timeout: 3000 }); } catch { /* retain a real draft and reject below */ }
   if ((await composer.innerText()).trim()) throw new Error('GPT_WEB_FOREIGN_DRAFT');
   const effort = reasoning === 'current' ? 'current' : await selectWebReasoning(page, reasoning);
   const tools = page.locator('button[data-composer-navigation-target="add-context"],button[data-testid="composer-plus-btn"],button[aria-label="Добавить файлы и другое"],button[aria-label="Add files and more"]').first();
