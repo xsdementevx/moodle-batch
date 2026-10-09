@@ -169,6 +169,11 @@ test('Web validates request identity, coverage, answers and observed source link
   const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[1].id], needsReview: false, sourceUrls: ['https://source.example/one'] }] };
   assert.equal(parseWeb(JSON.stringify(result), [question], 'nonce', result.answers[0].sourceUrls)[0].status, 'candidate');
   assert.equal(parseWeb(JSON.stringify(result), [question], 'nonce', [])[0].status, 'needs_review');
+  for (const wrapped of [`<CodeBlock language="json" editable={true}>\n${JSON.stringify(result)}\n</CodeBlock>`,
+    `<escape>${JSON.stringify(result)}</escape>`]) {
+    assert.equal(parseWeb(wrapped, [question], 'nonce', result.answers[0].sourceUrls)[0].status, 'candidate');
+  }
+  assert.throws(() => parseWeb(`<CodeBlock>${JSON.stringify(result)}</CodeBlock> trailing prose`, [question], 'nonce', []), /INVALID_WEB_JSON/);
   assert.throws(() => parseWeb(JSON.stringify(result), [question], 'different', []), /INCOMPLETE_WEB_RESPONSE/);
   assert.throws(() => parseWeb(JSON.stringify(result), [q('1', { memory: { excludedAnswers: [[options[1].id]] } })], 'nonce', []), /EXCLUDED_WEB_ANSWER/);
   assert.ok(!webPrompt([question], { text: '' }, 'nonce').includes('sequencecheck'));

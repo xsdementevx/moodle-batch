@@ -37,7 +37,8 @@ export function webPrompt(questions, context, requestId) {
 }
 
 export function parseWeb(text, questions, requestId, citations) {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+  const cleaned = text.trim().replace(/^<(escape|CodeBlock)\b[^>]*>([\s\S]*)<\/\1>$/u, '$2').trim()
+    .replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
   let result;
   try { result = JSON.parse(cleaned); } catch { throw new Error('INVALID_WEB_JSON'); }
   if (result.requestId !== requestId || !Array.isArray(result.answers) || result.answers.length !== questions.length
