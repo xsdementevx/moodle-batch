@@ -116,15 +116,28 @@ export function openAnswers(path) {
       try { key = questionKey(question); } catch { return { status: 'unsupported', answer: null, excludedAnswers: [], observations: 0 }; }
       const all = read.all(key);
       const records = all.filter(r => !r.evidence.startsWith('row:') && !r.evidence.startsWith('option:'));
-      const positive = [...new Set(records.filter(r => r.outcome === 'correct').map(r => r.answer))];
+      let positive = [...new Set(records.filter(r => r.outcome === 'correct').map(r => r.answer))];
       const negative = [...new Set(records.filter(r => ['incorrect', 'partiallycorrect'].includes(r.outcome)).map(r => r.answer))];
-      let conflict = positive.length > 1 || positive.some(answer => negative.includes(answer));
+      let conflict = false;
       const multipleOptions = {};
       if (question.type === 'multiple') for (const option of question.options) {
         const outcomes = new Set(all.filter(r => r.evidence === `option:${option.id}`).map(r => r.outcome === 'correct'));
-        for (const signature of positive) outcomes.add(decodeAnswer(question, signature).includes(option.id));
         if (outcomes.size > 1) conflict = true;
         else if (outcomes.size === 1) multipleOptions[option.id] = [...outcomes][0];
+      }
+      // Moodle can award full marks despite selected distractors (zero negative weight).
+      // Explicit option marks take precedence; untouched options remain unknown.
+      if (question.type === 'multiple' && Object.keys(multipleOptions).length) {
+        positive = positive.filter(signature => {
+          const answer = decodeAnswer(question, signature);
+          return Object.entries(multipleOptions).every(([id, included]) => answer.includes(id) === included);
+        });
+      }
+      conflict ||= (question.type !== 'multiple' && positive.length > 1) || positive.some(answer => negative.includes(answer));
+      if (!conflict && question.type === 'multiple' && positive.length > 1) {
+        // Reuse an exact accepted set compatible with all explicit marks, never a new combination.
+        positive.sort((a, b) => JSON.parse(a).length - JSON.parse(b).length || a.localeCompare(b));
+        positive = positive.slice(0, 1);
       }
       if (!conflict && question.type === 'multiple' && question.options.every(option => Object.hasOwn(multipleOptions, option.id))) {
         const signature = answerSignature(question, question.options.filter(option => multipleOptions[option.id]).map(option => option.id));

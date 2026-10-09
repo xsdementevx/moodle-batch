@@ -10,6 +10,41 @@ const question = (extra = {}) => ({ origin: 'https://moodle.example', userScope:
   attemptId: '30', slot: '1', pageKind: 'review', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20',
   type: 'choice', text: 'Choose a sample answer.', options, rows: [], answer: [options[0].id], feedback: 'correct', ...extra });
 
+test('full Moodle marks do not override explicit wrong options or classify untouched options', () => {
+  const store = openAnswers(':memory:');
+  const q = question({ type: 'multiple', answer: [options[0].id, options[1].id],
+    options: options.map((o, i) => ({ ...o, selected: i < 2, feedback: i === 0 ? 'correct' : i === 1 ? 'incorrect' : 'unconfirmed' })) });
+  try {
+    store.importReview([q]);
+    const memory = store.lookup(q);
+    assert.equal(memory.status, 'unresolved');
+    assert.deepEqual(memory.multipleOptions, { [options[0].id]: true, [options[1].id]: false });
+    assert.equal(Object.hasOwn(memory.multipleOptions, options[2].id), false);
+    assert.equal(isExcludedAnswer({ ...q, memory }, q.answer), true);
+    const accepted = { ...q, attemptId: '31', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=31'),
+      answer: [options[0].id], options: q.options.map((o, i) => ({ ...o, selected: i === 0, feedback: i === 0 ? 'correct' : 'unconfirmed' })) };
+    store.importReview([accepted]);
+    assert.equal(store.lookup(q).status, 'known');
+    assert.deepEqual(store.lookup(q).answer, accepted.answer);
+    assert.equal(Object.hasOwn(store.lookup(q).multipleOptions, options[2].id), false);
+  } finally { store.close(); }
+});
+
+test('different fully accepted multiple sets reuse an observed set without inferring option exclusions', () => {
+  const store = openAnswers(':memory:');
+  const q = question({ type: 'multiple', answer: [options[0].id, options[1].id] });
+  try {
+    store.importReview([q, { ...q, attemptId: '31', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=31'), answer: [options[0].id] }]);
+    const memory = store.lookup(q);
+    assert.equal(memory.status, 'known');
+    assert.deepEqual(memory.answer, [options[0].id]);
+    assert.equal(memory.multipleOptions, undefined);
+    assert.equal(isExcludedAnswer({ ...q, memory }, q.answer), false);
+    store.importReview([{ ...q, attemptId: '32', sourceUrl: q.sourceUrl.replace('attempt=30', 'attempt=32'), feedback: 'incorrect' }]);
+    assert.equal(store.lookup(q).status, 'conflict');
+  } finally { store.close(); }
+});
+
 test('multiple option memory excludes explicit wrong choices, preserves required choices and detects conflicts', () => {
   const store = openAnswers(':memory:');
   const q = question({ type: 'multiple', feedback: 'partiallycorrect', answer: [options[0].id, options[1].id],
