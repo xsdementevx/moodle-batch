@@ -280,8 +280,8 @@ test('installed extension recovers a lost start reply after reopening without ch
       const course = state.overview.courses[0];
       const quiz = course.quizzes[0];
       course.quizzes = [{ ...quiz, percent: 100, status: 'maximum' },
-        { ...quiz, quizId: '21', percent: 95, status: 'excellent' },
-        { ...quiz, quizId: '22', percent: null, status: 'unattempted' }];
+        { ...quiz, quizId: '21', percent: 95, status: 'excellent', activeAttempt: true, analysis: { conflict: 1 }, attemptUsage: { used: 2, allowed: 2, remaining: 0 } },
+        { ...quiz, quizId: '22', percent: null, status: 'unattempted', error: 'START_UNAVAILABLE', attemptUsage: { used: 2, allowed: 2, remaining: 0 } }];
       return state;
     };
     await reopened.reload();
@@ -305,6 +305,28 @@ test('installed extension recovers a lost start reply after reopening without ch
     await reopened.locator('#grade-filter').selectOption('selected');
     assert.equal(await reopened.locator('.quiz').count(), 1);
     assert.equal(calls, 1, 'filtering and selecting must not send an attempt');
+    await reopened.locator('#nav-issues').click();
+    assert.equal(await reopened.locator('#page-title').textContent(), 'Требуют внимания');
+    assert.equal(await reopened.locator('.quiz').count(), 2);
+    const activeRow = reopened.locator('.quiz').filter({ has: reopened.locator('input[data-quiz="21"]') });
+    const exhaustedRow = reopened.locator('.quiz').filter({ has: reopened.locator('input[data-quiz="22"]') });
+    const coursePanel = activeRow.locator('xpath=ancestor::details');
+    if (await coursePanel.getAttribute('open') !== '') await coursePanel.locator('summary').click();
+    assert.match(await activeRow.textContent(), /Конфликтов в памяти: 1/);
+    assert.equal(await activeRow.locator('.quiz-action').textContent(), 'Завершить попытку');
+    assert.equal(await activeRow.locator('.quiz-action').isDisabled(), false, 'active attempt can finish with no new attempts left');
+    assert.equal(await exhaustedRow.locator('.quiz-action').isDisabled(), true);
+    await reopened.locator('#select').click();
+    let directIntent;
+    service.start = async intent => { directIntent = intent; throw new Error('JOB_ALREADY_RUNNING'); };
+    await activeRow.locator('.quiz-action').click();
+    await reopened.getByText('Другой запуск уже выполняется.', { exact: true }).waitFor();
+    assert.deepEqual(directIntent.quizIds, ['21'], 'row action must ignore all other selected tests');
+    assert.equal(directIntent.maxAttempts, 1);
+    assert.equal(calls, 1);
+    service.start = start;
+    await reopened.locator('#nav-tests').click();
+    assert.equal(await reopened.locator('.quiz').count(), 3);
     assert.equal(await page.locator('#responseform input').inputValue(), 'unchanged');
   } finally { await context?.close(); if (server) await new Promise(done => server.close(done)); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });

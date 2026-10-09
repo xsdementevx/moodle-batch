@@ -16,6 +16,11 @@ test('attempt limits and used attempts come from quiz metadata, never from quest
     assert.equal((await parser.parse(content('Attempts allowed: 2'), url)).attemptUsage.remaining, 0);
     assert.equal((await parser.parse(content('Разрешено попыток: Неограниченно'), url)).attemptUsage.unlimited, true);
     assert.equal((await parser.parse(content(''), url)).attemptUsage.allowed, null);
+    const resume = content('Разрешено попыток: 2') + '<form action="/mod/quiz/startattempt.php" method="post"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"><button>Продолжить текущую попытку</button></form>';
+    const active = await parser.parse(resume, url);
+    assert.equal(active.activeAttempt, true, 'Moodle resumes through POST without revealing an attempt URL');
+    assert.equal(active.activeUrl, null);
+    assert.equal(active.attemptUsage.remaining, 0);
     assert.deepEqual((await parser.parse(html('<div class="qtext">Разрешено попыток: 9</div>', 'view'), url)).attemptUsage, { used: 0, allowed: null, unlimited: false, remaining: null });
   } finally { await parser.close(); }
 });

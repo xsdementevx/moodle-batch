@@ -69,6 +69,11 @@ summary:hover{background:#fafbfd}
 .quiz a{flex:1;font-size:14px;color:var(--ink);overflow-wrap:anywhere}
 .quiz a:hover{color:var(--blue)}
 .quiz .score{min-width:76px;text-align:right;font-size:13px;font-weight:600;white-space:nowrap}
+.quiz-actions{display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0}
+.quiz-action{font-size:12px;min-height:44px;padding:8px 12px}
+.quiz .quiz-link{min-width:0}
+.quiz-problem{display:block;color:var(--red);margin-top:8px;white-space:pre-line}
+@media(max-width:700px){.quiz{display:grid;grid-template-columns:20px minmax(0,1fr)}.quiz-actions{grid-column:2;flex-direction:row;align-items:center;justify-content:space-between;gap:8px}.quiz .score{text-align:left}}
 .low{color:var(--amber)}
 .good{color:var(--green)}
 .badge{padding:4px 8px;border-radius:5px;background:#edf0f5;color:var(--muted);font-size:11px;white-space:nowrap}
@@ -136,7 +141,7 @@ main{margin:0;padding:24px 20px}
 }
 
 @media(max-width:700px){.sidebar{flex-wrap:wrap;gap:12px}
-.sidebar nav{width:100%}
+.sidebar nav{width:100%;flex-wrap:wrap}
 .page-header{flex-direction:column;gap:16px}
 h1{font-size:28px}
 .metrics{grid-template-columns:repeat(2,1fr)}

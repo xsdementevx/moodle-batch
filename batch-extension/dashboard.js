@@ -5,6 +5,7 @@ const $ = id => document.getElementById(id);
 const selected = new Set(preset ? [preset] : []);
 const cacheKey = `overview:${userScope}`;
 let current, connected = false, pending = false, timer, submitting = false, initial = true, pendingIntent = null;
+let issuesOnly = location.hash === '#issues';
 const api = async (route, body) => {
   const result = await chrome.runtime.sendMessage({ type: 'api', route, userScope, body });
   if (!result || result.error) {
@@ -28,13 +29,21 @@ const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(val
 const effortLabel = { Instant: 'Лёгкое размышление', Medium: 'Среднее размышление', High: 'Высокое размышление', instant: 'Лёгкое размышление', medium: 'Среднее размышление', high: 'Высокое размышление' };
 const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
+function problemDetails(q) {
+  const latest = current?.jobs.slice().reverse().flatMap(job => job.results || []).find(result => result.quizId === q.quizId);
+  const code = latest?.error || q.error || q.reviewError;
+  return [code ? errors[code] || code : '', q.analysis?.conflict ? `Конфликтов в памяти: ${q.analysis.conflict}` : '',
+    q.analysis?.unsupported ? `Неподдерживаемых вопросов: ${q.analysis.unsupported}` : '',
+    ...(latest?.unresolvedQuestions || []).map(item => `Вопрос ${item.slot}: ${reviewReasons[item.reason] || item.reason}`)].filter(Boolean);
+}
 function matches(q, course) {
+  if (issuesOnly && !problemDetails(q).length) return false;
   const search = $('search').value.trim().toLocaleLowerCase('ru');
   if (search && !`${course.title} ${q.topic || ''} ${q.title} ${q.quizId}`.toLocaleLowerCase('ru').includes(search)) return false;
   if ($('course-filter').value && course.courseId !== $('course-filter').value) return false;
   if ($('low').checked && !belowMaximum(q)) return false;
   return ({ all: true, low: belowMaximum(q), new: !Number.isFinite(q.percent), maximum: q.percent === 100,
-    active: Boolean(q.activeAttempt), selected: selected.has(q.quizId), error: Boolean(q.error || q.reviewError || q.analysis?.conflict || q.analysis?.unsupported) })[$('grade-filter').value];
+    active: Boolean(q.activeAttempt), selected: selected.has(q.quizId), error: Boolean(problemDetails(q).length) })[$('grade-filter').value];
 }
 function visibleQuizzes() { return (current?.overview?.courses || []).flatMap(course => course.quizzes.filter(q => matches(q, course))); }
 function buttons() {
@@ -43,6 +52,7 @@ function buttons() {
   $('run').textContent = pendingIntent ? `Проверить сохранённый запуск (${pendingIntent.quizIds.length})` : `Решить и отправить выбранные (${selected.size})`;
   for (const id of ['select', 'clear', 'rounds']) $(id).disabled = locked;
   for (const control of $('courses').querySelectorAll('input[type=checkbox],.course-select')) control.disabled = locked;
+  for (const control of $('courses').querySelectorAll('.quiz-action')) control.disabled = locked || Boolean(busy()) || !connected || current?.authRequired || control.dataset.exhausted === 'true';
   $('stop').disabled = !busy() || busy().stopRequested;
   $('stop').textContent = busy()?.stopRequested ? 'Остановка запрошена…' : 'Остановить после текущего действия';
   $('refresh').disabled = Boolean(current?.running) || pending; $('analyze').disabled = $('refresh').disabled; $('check-attempts').disabled = $('refresh').disabled;
@@ -160,6 +170,7 @@ function render(overview, cached = false, force = false) {
   if (!overview || overview.userScope !== userScope || overview.origin !== 'https://sdo.sibupk.su') throw new Error('USER_SCOPE_MISMATCH');
   const all = overview.courses.flatMap(course => course.quizzes);
   $('metric-total').textContent = all.length; $('nav-count').textContent = all.length;
+  $('issues-count').textContent = all.filter(q => problemDetails(q).length).length;
   $('metric-courses').textContent = `Курсов: ${overview.courses.length}`;
   $('metric-max').textContent = all.filter(q => q.percent === 100).length;
   $('metric-low').textContent = all.filter(belowMaximum).length;
@@ -206,9 +217,17 @@ function render(overview, cached = false, force = false) {
       else if (q.analysis || q.activeAttempt || q.attempts) info.push('Состояние попыток — из сохранённого подробного анализа');
       if (q.error || q.reviewError) info.push('Анализ требует проверки');
       if (info.some(Boolean)) a.append(node('small', info.filter(Boolean).join(' · '), q.activeAttempt ? 'quiz-meta resume' : 'quiz-meta')); a.href = `${overview.origin}/mod/quiz/view.php?id=${encodeURIComponent(q.quizId)}`; a.target = '_blank'; a.rel = 'noopener';
+      if (issuesOnly) a.append(node('small', problemDetails(q).join('\n'), 'quiz-problem'));
       const score = node('span', !Number.isFinite(q.percent) ? 'Без оценки' : `${q.percent}%`, `score ${belowMaximum(q) ? 'low' : q.percent === 100 ? 'good' : ''}`);
       if (q.error || q.reviewError) score.title = errors[q.error || q.reviewError] || q.error || q.reviewError;
-      row.append(check, a, score); details.append(row);
+      const action = node('button', q.activeAttempt ? 'Завершить попытку' : Number.isFinite(q.percent) || q.attempts ? 'Перерешать' : 'Решить', 'secondary quiz-action');
+      action.dataset.exhausted = String(!q.activeAttempt && q.attemptUsage?.remaining === 0);
+      if (action.dataset.exhausted === 'true') { action.textContent = 'Попытки исчерпаны'; action.title = 'По последней проверке новых попыток нет. Обновите лимиты, если условия теста изменились.'; }
+      else action.title = 'Решить и отправить только этот тест, одна попытка';
+      action.setAttribute('aria-label', `${action.textContent}: ${q.title}`);
+      action.addEventListener('click', () => startRun([q.quizId], 1));
+      const actions = node('div', undefined, 'quiz-actions'); actions.append(score, action);
+      row.append(check, a, actions); details.append(row);
     }
     fragment.append(details);
   }
@@ -219,17 +238,20 @@ function render(overview, cached = false, force = false) {
   $('visible-count').textContent = `Показано ${count} из ${all.length} тестов · ${courseCount} курсов`;
   buttons();
 }
-function navigate(logs) {
+function navigate(logs, issues = false) {
+  issuesOnly = issues;
   $('tests-view').hidden = logs; $('logs-view').hidden = !logs;
-  $('nav-tests').classList.toggle('active', !logs); $('nav-logs').classList.toggle('active', logs);
-  $('nav-tests').toggleAttribute('aria-current', !logs); $('nav-logs').toggleAttribute('aria-current', logs);
-  if (logs) $('nav-logs').setAttribute('aria-current', 'page'); else $('nav-tests').setAttribute('aria-current', 'page');
-  history.replaceState(null, '', logs ? '#logs' : '#tests');
-  $('page-title').textContent = logs ? 'Журнал запусков' : 'Ваши тесты';
-  document.querySelector('.subtitle').textContent = logs ? 'История решений, причины остановки и отчёт для передачи.' : 'Выберите тесты. Следите за решением и результатами в одном месте.';
+  for (const [id, active] of [['nav-tests', !logs && !issues], ['nav-logs', logs], ['nav-issues', issues]]) {
+    $(id).classList.toggle('active', active); $(id).removeAttribute('aria-current'); if (active) $(id).setAttribute('aria-current', 'page');
+  }
+  history.replaceState(null, '', logs ? '#logs' : issues ? '#issues' : '#tests');
+  $('page-title').textContent = logs ? 'Журнал запусков' : issues ? 'Требуют внимания' : 'Ваши тесты';
+  document.querySelector('.subtitle').textContent = logs ? 'История решений, причины остановки и отчёт для передачи.' : issues ? 'Ошибки и конфликты. Проверьте причины и завершите начатые попытки.' : 'Выберите тесты. Следите за решением и результатами в одном месте.';
+  if (current?.overview) render(current.overview, false, true);
 }
 $('active-filter').addEventListener('click', () => { navigate(false); $('search').value = ''; $('course-filter').value = ''; $('grade-filter').value = 'active'; $('low').checked = false; if (current?.overview) render(current.overview, false, true); $('grade-filter').focus(); });
 $('nav-tests').addEventListener('click', () => navigate(false)); $('nav-logs').addEventListener('click', () => navigate(true)); $('open-logs').addEventListener('click', () => { navigate(true); $('nav-logs').focus(); });
+$('nav-issues').addEventListener('click', () => { $('search').value = ''; $('course-filter').value = ''; $('grade-filter').value = 'all'; $('low').checked = false; navigate(false, true); });
 $('errors-only').addEventListener('change', () => showJobs(true));
 for (const id of ['search', 'course-filter', 'grade-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', () => { if (id === 'grade-filter') $('low').checked = $('grade-filter').value === 'low'; if (current?.overview) render(current.overview, false, true); });
 $('reset-filters').addEventListener('click', () => { $('search').value = ''; $('course-filter').value = ''; $('grade-filter').value = 'all'; $('low').checked = false; if (current?.overview) render(current.overview, false, true); });
@@ -269,14 +291,14 @@ $('analyze').addEventListener('click', async () => { try { await api('refresh', 
 $('check-attempts').addEventListener('click', async () => { try { await api('refresh', { attemptsOnly: true }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('refresh').addEventListener('click', async () => { try { await api('refresh'); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('stop').addEventListener('click', async () => { try { await api('stop', { requestId: busy().requestId }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
-$('run').addEventListener('click', async () => {
-  if (submitting || busy() || !connected || current?.authRequired || !selected.size) return;
+async function startRun(quizIds, maxAttempts) {
+  if (submitting || busy() || !connected || current?.authRequired || !quizIds.length) return;
   submitting = true; buttons();
   try {
     // Preserve the exact intent across a lost HTTP reply; retries use the same requestId.
     let intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
     if (intent && intent.userScope !== userScope) throw new Error('USER_SCOPE_MISMATCH');
-    intent ||= { requestId: crypto.randomUUID(), userScope, quizIds: [...selected], maxAttempts: Number($('rounds').value) };
+    intent ||= { requestId: crypto.randomUUID(), userScope, quizIds, maxAttempts };
     pendingIntent = intent;
     await chrome.storage.local.set({ pendingJob: intent });
     await api('jobs', intent); await chrome.storage.local.remove('pendingJob'); pendingIntent = null; await load();
@@ -285,7 +307,8 @@ $('run').addEventListener('click', async () => {
     notice(errors[error.message] || error.message, true);
   }
   finally { submitting = false; buttons(); }
-});
+}
+$('run').addEventListener('click', () => startRun([...selected], Number($('rounds').value)));
 (async () => {
   const intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
   if (intent?.userScope === userScope) {
@@ -293,7 +316,7 @@ $('run').addEventListener('click', async () => {
   }
   const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
   if (cached) { try { render(cached, true); } catch { /* another account cache */ } }
-  navigate(location.hash === '#logs');
+  navigate(location.hash === '#logs', location.hash === '#issues');
   buttons();
   load();
 })();

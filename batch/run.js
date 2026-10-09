@@ -14,7 +14,7 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
         || page.courseId !== view.courseId) throw new Error('PAGE_SCOPE_MISMATCH');
   };
   validate(view);
-  await progress('reading', { attemptUsage: view.attemptUsage, activeAttempt: Boolean(view.activeUrl) });
+  await progress('reading', { attemptUsage: view.attemptUsage, activeAttempt: Boolean(view.activeUrl || view.activeAttempt) });
   for (const href of view.reviews) {
     check();
     const url = new URL(href); url.searchParams.set('showall', '1');
@@ -27,7 +27,7 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
   await progress('starting');
   const started = await startTest(moodle, view, join(root, 'operations', `${startId(view)}.json`));
   if (view.attemptUsage) {
-    const used = view.attemptUsage.used == null ? null : view.attemptUsage.used + (view.activeUrl ? 0 : 1);
+    const used = view.attemptUsage.used == null ? null : view.attemptUsage.used + (view.activeUrl || view.activeAttempt ? 0 : 1);
     await progress('starting', { activeAttempt: true, attemptUsage: { ...view.attemptUsage, used,
       remaining: view.attemptUsage.allowed !== null && used !== null ? Math.max(0, view.attemptUsage.allowed - used) : null } });
   }
@@ -68,7 +68,7 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, pro
   try { gradePercent = (await moodle.grades(view.courseId)).find(q => q.quizId === quizId)?.percent ?? null; }
   catch { /* preserve the attempt result when gradebook access is unavailable */ }
   const usage = view.attemptUsage;
-  const used = usage?.used == null ? null : usage.used + (view.activeUrl ? 0 : 1);
+  const used = usage?.used == null ? null : usage.used + (view.activeUrl || view.activeAttempt ? 0 : 1);
   const attemptUsage = usage ? { ...usage, used, remaining: usage.allowed !== null && used !== null ? Math.max(0, usage.allowed - used) : null } : null;
   return { quizId, courseId: view.courseId, attemptId: test.attemptId, reviewUrl: submission.reviewUrl, grade, percent, gradePercent, attemptUsage,
     total: review.questions.length, correct: review.questions.filter(q => q.feedback === 'correct').length,

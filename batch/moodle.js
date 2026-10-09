@@ -228,6 +228,7 @@ export async function openParser() {
             slots: form.querySelector('input[name=slots]')?.value?.split(',') || [],
           } : null,
           questions, reviews, activeUrl: active ? active.href : null,
+          activeAttempt: Boolean(active) || (kind === 'view' && Boolean(start) && /^(?:Продолжить (?:текущую )?попытку|Continue (?:the )?(?:last |current )?attempt)$/iu.test(norm(start.querySelector('button,input[type=submit]')?.textContent || start.querySelector('input[type=submit]')?.value))),
           startForm: kind === 'view' && start ? {
             action: new URL(start.getAttribute('action') || '', base).href, method: start.method,
             fields: [...start.querySelectorAll('input[type=hidden][name]')].map(input => [input.name, input.value]),

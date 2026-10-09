@@ -74,7 +74,8 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
     try {
       const view = await moodle.read(quiz.url);
       if (view.quizId !== quiz.quizId || view.courseId !== course.courseId || view.userScope !== moodle.userScope) throw new Error('PAGE_SCOPE_MISMATCH');
-      quiz.activeAttempt = Boolean(view.activeUrl);
+      delete quiz.error;
+      quiz.activeAttempt = Boolean(view.activeUrl || view.activeAttempt);
       quiz.canStart = Boolean(view.startForm);
       quiz.preflightRequired = Boolean(view.startForm?.preflightRequired);
       quiz.attempts = view.attemptSummaries.length;
