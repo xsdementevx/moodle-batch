@@ -16,6 +16,7 @@ export function webPrompt(questions, context, requestId) {
     + 'Верни только JSON: {"requestId":"' + requestId + '","answers":[{"slot":"1","answer":[],"confidence":0.95,"needsReview":false,"sourceUrls":["https://..."]}]}. '
     + 'answer: choice — массив с одним ID; multiple — полный массив ID; matching — объект rowId:optionId; text — строка. '
     + 'Для text/shortanswer дай точный ответ: для вопроса «... ли?» только «да» или «нет»; для пропуска только пропущенную часть без уже написанных слов и единиц. '
+    + 'Если в коротком пропуске требуется названный по описанию человек и полное ФИО не запрошено, дай фамилию без имени, отчества и инициалов. answerSize — размер поля, подсказка о краткости, а не максимальное число знаков. '
     + 'Сохраняй написание и грамматическую форму из источника: не заменяй словесное число цифрой и наоборот. Не добавляй пояснения и кавычки. '
     + 'Для text/numerical используй число в требуемом формате. '
     + 'Если ответа недостаточно, поставь needsReview=true и answer=null. Не выдумывай ID или источники.\n'
@@ -42,6 +43,7 @@ export function webPrompt(questions, context, requestId) {
     + JSON.stringify({ requestId, context: context.documents ? undefined : selectContext(context.text, questions, 100000),
       contexts: context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, doc.text])) : undefined,
       questions: questions.map(q => ({ slot: q.slot, contextId: q.contextId, type: q.type, textFormat: q.textFormat || null, text: q.text,
+        ...(q.type === 'text' && q.textFieldSize ? { answerSize: q.textFieldSize } : {}),
         options: q.options.map(o => ({ id: o.id, text: o.text })),
         rows: q.rows.map(row => ({ id: row.id, text: row.text, options: row.options.map(o => ({ id: o.id, text: o.text })) })),
         excludedAnswers: q.memory?.excludedAnswers || [],
@@ -71,7 +73,7 @@ export function parseWeb(text, questions, requestId, citations) {
     // Validate the model's type before applying the legacy short-answer rules.
     answerSignature(q, item.answer);
     const answer = q.type === 'text' && q.textFormat !== 'numerical'
-      ? normalizeShortAnswerForQuestion(q.text, item.answer) : item.answer;
+      ? normalizeShortAnswerForQuestion(q.text, item.answer, q.textFieldSize) : item.answer;
     if (isExcludedAnswer(q, answer)) return {
       slot: q.slot, provider: 'gpt_web', answer: null, rejectedAnswer: answer, status: 'needs_review',
       reviewReason: 'excluded_answer', sourceUrls, ...confidence, verifiedByMoodle: false };

@@ -10,6 +10,22 @@ import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets
 import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, webSolver } from '../../batch/web.js';
 import { verifyEvidence } from '../../batch/evidence.js';
 
+test('person blanks use a surname while explicit full-name requests and non-person terms stay intact', () => {
+  const fullName = 'Георгий Константинович Жуков';
+  assert.equal(normalizeShortAnswerForQuestion('Маршал, принимавший Парад Победы — ….', fullName, 6), 'Жуков');
+  assert.equal(normalizeShortAnswerForQuestion('Маршал, принимавший Парад Победы — ….', fullName), fullName);
+  assert.equal(normalizeShortAnswerForQuestion('Маршал, принимавший Парад Победы — ….', fullName, 80), fullName);
+  assert.equal(normalizeShortAnswerForQuestion('Полное имя маршала: ….', fullName, 6), fullName);
+  assert.equal(normalizeShortAnswerForQuestion('Укажите Ф.И.О.: ….', fullName, 6), fullName);
+  assert.equal(normalizeShortAnswerForQuestion('Война называлась ….', 'Великая Отечественная война'), 'Великая Отечественная война');
+  assert.equal(normalizeShortAnswerForQuestion('Кто принимал парад?', fullName), fullName);
+  const person = q('1', { type: 'text', options: [], text: 'Маршал, принимавший Парад Победы — ….', textFormat: 'shortanswer', textFieldSize: 6, memory: { excludedAnswers: [fullName] } });
+  const parsed = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer: fullName, needsReview: false,
+    sourceUrls: ['https://source.example/'] }] }), [person], 'nonce', ['https://source.example/'])[0];
+  assert.equal(parsed.answer, 'Жуков');
+  assert.equal(parsed.rawAnswer, fullName);
+});
+
 test('uncertain Web responses preserve diagnostics but remain unverified', async () => {
   const question = q('1');
   const evidence = { kind: 'web', url: 'https://source.example/', quote: 'A factual quote retained for later analysis.' };

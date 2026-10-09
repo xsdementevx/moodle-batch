@@ -1,4 +1,4 @@
-export function normalizeShortAnswerForQuestion(questionText, answerText) {
+export function normalizeShortAnswerForQuestion(questionText, answerText, answerSize) {
     const question = String(questionText || '');
     let answer = String(answerText || '').replace(/\s+/g, ' ').trim();
     const asksYesNo = /(?:^|\s)ли(?:\s|[?.,:])/iu.test(question);
@@ -41,6 +41,11 @@ export function normalizeShortAnswerForQuestion(questionText, answerText) {
         const genitiveOne = answer.match(/^1\s+(года|месяца|дня|часа)$/iu);
         if (genitiveOne) return `одного ${genitiveOne[1]}`;
     }
+
+    const person = answer.match(/^\p{Lu}\p{Ll}+\s+\p{Lu}\p{Ll}+(?:вич|вна|ич|ична)\s+(\p{Lu}\p{Ll}+(?:-\p{Lu}\p{Ll}+)?)$/u);
+    const asksFullName = /Ф\.?\s*И\.?\s*О\.?|полн\p{L}*\s+имя|имя.{0,20}отчество|фамили\p{L}*.{0,15}имя/iu.test(question);
+    if (blanks.length === 1 && person && !asksFullName && Number.isInteger(answerSize)
+        && answerSize > 0 && answer.length > answerSize && person[1].length <= answerSize) return person[1];
 
     return answer;
 }

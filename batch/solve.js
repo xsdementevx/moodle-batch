@@ -151,6 +151,7 @@ export function questionPackets(questions, context, limit = 100000, maxQuestions
 
 export function questionFingerprint(q, context) {
   return digest([questionKey(q), q.textFormat || null, (context.documents?.[q.contextId] || context).contextHash || null,
+    ...(q.textFieldSize ? [q.textFieldSize] : []),
     q.memory?.excludedAnswers || [], ...(q.memory?.matchingRows ? [q.memory.matchingRows] : []),
     ...(q.memory?.multipleOptions ? [q.memory.multipleOptions] : [])]);
 }
@@ -220,6 +221,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         if (JSON.parse(await readFile(join(journalDir, `${legacyId}.json`), 'utf8')).state === 'pending') throw new Error('UNKNOWN_MODEL_OUTCOME');
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const id = digest([batch.some(q => ['matching', 'multiple'].includes(q.type)) ? 'web-packet-v4-multisource' : 'web-packet-v3-evidence', batch.map(q => [q.attemptId, q.slot, questionKey(q), q.textFormat || null, q.memory.excludedAnswers,
+        ...(q.textFieldSize ? [q.textFieldSize] : []),
         ...(q.memory.matchingRows ? [q.memory.matchingRows] : []), ...(q.memory.multipleOptions ? [q.memory.multipleOptions] : [])]), scoped.contextHash]);
       const jevAnswers = new Map(batch.filter(q => decisions.get(q.slot)?.provider === 'jev').map(q => [q.slot, decisions.get(q.slot)]));
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });

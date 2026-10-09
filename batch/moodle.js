@@ -147,10 +147,11 @@ export async function openParser() {
           const kinds = [radios.length, checkboxes.length, selects.length, texts.length].filter(Boolean).length;
           let type = radios.length ? 'choice' : checkboxes.length ? 'multiple' : selects.length ? 'matching' : texts.length === 1 ? 'text' : 'unsupported';
           let unsupportedReason = kinds !== 1 || texts.length > 1 ? 'UNSUPPORTED_CONTROLS' : null;
-          const cleanText = node => {
+          const cleanText = (node, blanks = false) => {
             if (!node) return '';
             const clone = node.cloneNode(true);
-            clone.querySelectorAll('.answernumber,.icon,.accesshide,input,script,style').forEach(n => n.remove());
+            if (blanks) clone.querySelectorAll('input[type=text],textarea').forEach(n => n.replaceWith('…'));
+            clone.querySelectorAll('.answernumber,.icon,.accesshide,.sr-only,.visually-hidden,input,script,style').forEach(n => n.remove());
             clone.querySelectorAll('br').forEach(n => n.replaceWith(' '));
             return norm(clone.textContent);
           };
@@ -158,7 +159,7 @@ export async function openParser() {
             const refs = (input.getAttribute('aria-labelledby') || '').split(/\s+/u).filter(Boolean)
               .map(id => document.getElementById(id)).filter(Boolean);
             const label = [...q.querySelectorAll('label[for]')].find(l => l.htmlFor === input.id);
-            return refs.length ? norm(refs.map(cleanText).join(' ')) : cleanText(label || input.closest('.r0,.r1'));
+            return refs.length ? norm(refs.map(ref => cleanText(ref)).join(' ')) : cleanText(label || input.closest('.r0,.r1'));
           };
           if (q.querySelector('.qtext img,.qtext svg,.qtext math,.qtext canvas,.qtext video,.qtext audio,.answer img,.answer math,.answer svg')) unsupportedReason = 'MEDIA_REQUIRES_EXTRACTION';
           const choices = radios.length ? radios : checkboxes;
@@ -174,9 +175,10 @@ export async function openParser() {
           const control = q.querySelector('input[name$="_:sequencecheck"]');
           return {
             slot: q.dataset.slot || /-(\d+)$/u.exec(q.id)?.[1] || '', page: pageNumber,
-            type, unsupportedReason, text: cleanText(stem), options, rows,
+            type, unsupportedReason, text: cleanText(stem, type === 'text'), options, rows,
             textFormat: type === 'text' ? (q.classList.contains('numerical') ? 'numerical' : q.classList.contains('shortanswer') ? 'shortanswer' : null) : null,
             textAnswer: texts.length === 1 ? norm(texts[0].value) : null,
+            textFieldSize: texts.length === 1 && Number.isInteger(texts[0].size) ? texts[0].size : null,
             textFieldName: texts.length === 1 ? texts[0].name : null,
             sequenceFieldName: control?.name || null, sequenceValue: control?.value || null,
             behaviour: q.classList.contains('deferredfeedback') ? 'deferredfeedback' : null,

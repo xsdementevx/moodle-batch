@@ -7,6 +7,18 @@ const source = 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20';
 const html = (content, kind = 'review') => `<!doctype html><body id="page-mod-quiz-${kind}" data-course-id="10" data-quiz-id="20" data-user-scope="u1">${content}</body>`;
 const choice = (state = 'incorrect') => `<div class="que multichoice ${state}" id="question-100-1"><div class="formulation"><div class="qtext">Choose<br>a sample.</div><div class="answer"><div class="r0"><input type="radio" name="q100:1_answer" id="a" value="0" checked disabled aria-labelledby="label-a"><div id="label-a"><span class="answernumber">a.</span>Alpha</div></div><div class="r1"><input type="radio" name="q100:1_answer" id="b" value="1" disabled><label for="b"><span class="answernumber">b.</span>Beta</label></div></div><input name="q100:1_:sequencecheck" value="2"></div><input type="checkbox" name="q100:1_:flagged" checked><div class="rightanswer">Правильный ответ: Beta</div></div>`;
 
+test('inline blanks exclude hidden UI labels and keep the same wording across question positions', async () => {
+  const parser = await openParser();
+  try {
+    const markup = number => html(`<div class="que shortanswer" id="question-100-${number}"><div class="formulation"><div class="qtext">Маршал СССР — <label class="sr-only">Ответ Вопрос ${number}</label><span class="visually-hidden">Подсказка для чтения</span><input type="text" name="q100:${number}_answer">.</div></div></div>`);
+    const first = (await parser.parse(markup(1), source)).questions[0];
+    const other = (await parser.parse(markup(3), source)).questions[0];
+    assert.equal(first.text, 'Маршал СССР — ….');
+    assert.equal(other.text, first.text);
+    assert.equal(first.textFormat, 'shortanswer');
+  } finally { await parser.close(); }
+});
+
 test('multiple option marks survive partial review without inventing feedback for unselected choices', async () => {
   const parser = await openParser();
   const store = openAnswers(':memory:');
