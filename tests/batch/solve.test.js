@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { optionId, digest, questionKey } from '../../batch/answers.js';
 import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
 import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
-import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, webSolver } from '../../batch/web.js';
+import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, webSolver } from '../../batch/web.js';
 import { closeExtensionTabs } from '../../batch/extension.js';
 import { chromium } from 'playwright';
 import { extractMaterial, loadContext } from '../../batch/context.js';
@@ -96,6 +96,21 @@ test('extension reuses one attachment, closes its own pages and detaches without
   for (let i = 0; i < 2; i++) await assert.rejects(solve([], {}, { journalPath: journal }), /FIXTURE_NAVIGATION_FAILURE/u);
   await solve.close();
   assert.deepEqual(events, ['connect', 'own-page-close', 'own-page-close', 'detach']);
+});
+
+test('a completed conversation is read after DOM timeout, while a foreign response still fails', async () => {
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const messages = [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
+    { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
+  let waits = 0, reads = 0;
+  const page = { url: () => 'https://chatgpt.com/c/owned-conversation',
+    waitForFunction: async () => { if (++waits % 2 === 0) { const error = new Error('timeout'); error.name = 'TimeoutError'; throw error; } },
+    evaluate: async () => { reads++; return messages; },
+    locator: () => assert.fail('no draft or send control should be touched') };
+  assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
+  assert.equal(reads, 1);
+  await assert.rejects(readWebResult(page, [q('1')], 'foreign'), /FOREIGN_CONVERSATION/);
+  assert.equal(reads, 2);
 });
 
 test('extension reconnects a missing or detached context before dispatch and never retries a pending packet', async () => {

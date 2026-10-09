@@ -162,14 +162,19 @@ async function readConversation(page, questions, requestId, parentRequestId) {
 export async function readWebResult(page, questions, requestId, parentRequestId) {
   await page.waitForFunction(id => [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')]
     .some(e => e.textContent.includes(id)), requestId, { timeout: 30000 });
-  await page.waitForFunction(turns => {
+  try { await page.waitForFunction(turns => {
     const assistants = [...document.querySelectorAll('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]')];
     const assistant = assistants.at(-1);
     if (assistants.length !== turns) return false;
     return assistant?.textContent.trim() && !document.querySelector('button[data-testid="stop-button"],button[aria-label="Stop streaming"],button[aria-label="Остановить генерацию"]')
       && Boolean(document.querySelector('button[data-testid="copy-turn-action-button"]')
         || assistant.querySelector('button[aria-label="Копировать"],button[aria-label="Copy"]'));
-  }, (parentRequestId ? [parentRequestId].flat().length : 0) + 1, { timeout: 300000 });
+  }, (parentRequestId ? [parentRequestId].flat().length : 0) + 1, { timeout: 300000 }); }
+  catch (error) {
+    if (error.name !== 'TimeoutError' || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) throw error;
+    // A stale message DOM must not discard a completed, scope-validated reply.
+    return readConversation(page, questions, requestId, parentRequestId);
+  }
   const assistant = page.locator('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]');
   const userCount = await page.locator('[data-message-author-role="user"]').count()
     || await page.locator('[data-content-search-turn-key]').count();
