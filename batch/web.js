@@ -120,9 +120,13 @@ export function parseConversation(messages, questions, requestId, parentRequestI
   const users = messages.filter(m => m.role === 'user');
   const finals = messages.filter(m => m.role === 'assistant' && m.endTurn && typeof m.text === 'string' && m.text.trim());
   const turns = parents.length + 1;
+  if (users.length === parents.length && parents.every((id, i) => users[i].text?.includes(id))) throw new Error('GPT_WEB_RESPONSE_NOT_READY');
   if (users.length !== turns || !users.at(-1).text?.includes(requestId) || finals.length > turns
       || parents.some((id, i) => !users[i].text?.includes(id))) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
-  if (finals.length < turns) throw new Error('GPT_WEB_RESPONSE_NOT_READY');
+  // A clarification may follow a turn that ended without final text. Only the
+  // current request needs a final answer; its full user/parent chain stays verified.
+  const lastUser = messages.findLastIndex(m => m.role === 'user');
+  if (!messages.slice(lastUser + 1).some(m => m.role === 'assistant' && m.endTurn && typeof m.text === 'string' && m.text.trim())) throw new Error('GPT_WEB_RESPONSE_NOT_READY');
   const text = finals.at(-1).text.trim().replace(/^<escape>([\s\S]*)<\/escape>$/u, '$1');
   const sources = messages.filter(m => m.role === 'tool' && m.toolName === 'web.run')
     .flatMap(m => m.sources || []).filter(url => typeof url === 'string' && /^https:\/\//u.test(url));
@@ -166,9 +170,23 @@ async function readConversation(page, questions, requestId, parentRequestId, con
 }
 
 export async function readWebResult(page, questions, requestId, parentRequestId, conversationUrl) {
-  if (conversationUrl && page.url() !== conversationUrl) return readConversation(page, questions, requestId, parentRequestId, conversationUrl);
+  const target = conversationUrl || page.url();
+  if (conversationUrl && conversationUrl !== page.url() && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(conversationUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target)) {
+    // Modern ChatGPT may have no readable message DOM. Read only the pinned
+    // conversation, without waiting five minutes for nonexistent DOM text.
+    const deadline = Date.now() + 300000;
+    while (true) {
+      try { return await readConversation(page, questions, requestId, parentRequestId, target); }
+      catch (error) {
+        if (error.message !== 'GPT_WEB_RESPONSE_NOT_READY' || Date.now() >= deadline) throw error;
+        await new Promise(done => setTimeout(done, 5000));
+      }
+    }
+  }
   try { await page.waitForFunction(id => [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')]
-    .some(e => e.textContent.includes(id)), requestId, { timeout: 30000 });
+    .some(e => e.textContent.includes(id)) || /^\/c\/[a-zA-Z0-9-]+$/u.test(location.pathname), requestId, { timeout: 30000 });
+  if (!conversationUrl && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) return readWebResult(page, questions, requestId, parentRequestId, page.url());
   await page.waitForFunction(turns => {
     const assistants = [...document.querySelectorAll('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]')];
     const assistant = assistants.at(-1);

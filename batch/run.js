@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { loadContext } from './context.js';
-import { solveTest } from './solve.js';
+import { solveTest, pendingModelTests } from './solve.js';
 import { startTest, startId, submitTest, submissionId } from './submit.js';
 
 export async function prepareQuiz(moodle, store, quizId, { root, progress = async () => {}, stopped = () => false,
@@ -82,20 +82,25 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
     try { prepared.push(await prepareQuiz(moodle, store, quizId, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) })); }
     catch (error) { results.push({ quizId, error }); }
   }
-  const documents = Object.fromEntries(prepared.map(p => [p.test.quizId, p.context]));
-  const questions = prepared.flatMap(p => p.questions.map(q => ({ ...q, nativeSlot: q.slot,
+  // A pending request stops its own test, while other tests retain shared batching.
+  const blocked = await pendingModelTests(prepared.flatMap(p => p.questions), join(options.root, 'operations'));
+  for (const quizId of blocked) results.push({ quizId, error: new Error('UNKNOWN_MODEL_OUTCOME') });
+  const eligible = prepared.filter(p => !blocked.has(p.test.quizId));
+  if (!eligible.length) return results;
+  const documents = Object.fromEntries(eligible.map(p => [p.test.quizId, p.context]));
+  const questions = eligible.flatMap(p => p.questions.map(q => ({ ...q, nativeSlot: q.slot,
     slot: `${q.quizId}:${q.attemptId}:${q.slot}`, contextId: p.test.quizId })));
   let solved;
   try {
     if (options.stopped?.()) throw new Error('STOPPED');
-    await options.progress?.('solving', { tests: prepared.length, total: questions.length });
+    await options.progress?.('solving', { tests: eligible.length, total: questions.length });
     solved = await (options.solve || solveTest)(questions, { documents },
       { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress });
   } catch (error) {
     console.error('Moodle Batch solver:', error.name, String(error.message).split('\n')[0].slice(0, 180));
-    return [...results, ...prepared.map(p => ({ quizId: p.test.quizId, error }))];
+    return [...results, ...eligible.map(p => ({ quizId: p.test.quizId, error }))];
   }
-  for (const p of prepared) {
+  for (const p of eligible) {
     const quizId = p.test.quizId;
     if (options.stopped?.()) { results.push({ quizId, error: new Error('STOPPED') }); continue; }
     try {

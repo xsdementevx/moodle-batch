@@ -121,5 +121,11 @@ test('offline parser retains response form and deferred feedback for request pre
     const viewHtml = '<body id="page-mod-quiz-view" data-course-id="10" data-quiz-id="20" data-user-scope="u1"><form method="post" action="/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"></form></body>';
     const view = await parser.parse(viewHtml, `${attempt.origin}/mod/quiz/view.php?id=20`);
     assert.equal(buildStart(view).fields.sesskey, 'synthetic');
+    const preflight = viewHtml.replace('</body>', '<form method="post" action="/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"><input type="hidden" name="_qf__mod_quiz_preflight_check_form" value="1"></form></body>');
+    const gated = await parser.parse(preflight, `${attempt.origin}/mod/quiz/view.php?id=20`);
+    assert.equal(gated.startForm.fields.length, 2);
+    assert.throws(() => buildStart(gated), /MOODLE_PREFLIGHT_REQUIRED/);
+    const resume = await parser.parse(preflight.replace('</body>', '<form method="get" action="/mod/quiz/attempt.php"><input type="hidden" name="attempt" value="30"></form></body>'), `${attempt.origin}/mod/quiz/view.php?id=20`);
+    assert.equal(new URL(resume.activeUrl).searchParams.get('attempt'), '30');
   } finally { await parser.close(); }
 });

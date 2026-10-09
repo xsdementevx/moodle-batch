@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
@@ -131,6 +131,26 @@ test('shared runner submits native slots to each test and isolates an unresolved
     assert.ok(results[1].error);
     assert.equal(submitted.length, 1);
     assert.equal(results[0].result.sources[0].slot, '1');
+    const journal = join(root, 'operations', `${'a'.repeat(64)}.json`);
+    await mkdir(join(root, 'operations'), { recursive: true });
+    const pending = { state: 'pending', questionIds: ['20:30:1'] };
+    await writeFile(journal, JSON.stringify(pending));
+    let batches = 0;
+    const isolated = await runQuizzes(moodle, store, ['20', '21'], { root, contextLoader: async () => ({ status: 'missing', text: '' }),
+      solve: async questions => {
+        batches++; assert.deepEqual(questions.map(q => q.slot), ['21:31:1']);
+        return questions.map(q => ({ ...q, decision: { status: 'needs_review', answer: null } }));
+      } });
+    assert.equal(batches, 1);
+    assert.equal(isolated.find(q => q.quizId === '20').error.message, 'UNKNOWN_MODEL_OUTCOME');
+    assert.notEqual(isolated.find(q => q.quizId === '21').error.message, 'UNKNOWN_MODEL_OUTCOME');
+    assert.equal(submitted.length, 1, 'pending test must never be submitted');
+    assert.deepEqual(JSON.parse(await readFile(journal, 'utf8')), pending, 'pending request remains intact');
+    await writeFile(journal, JSON.stringify({ state: 'pending' }));
+    const legacy = await runQuizzes(moodle, store, ['20', '21'], { root, contextLoader: async () => ({ status: 'missing', text: '' }),
+      solve: () => assert.fail('unscoped legacy pending request must block all unresolved tests') });
+    assert.equal(legacy.length, 2);
+    assert.ok(legacy.every(q => q.error.message === 'UNKNOWN_MODEL_OUTCOME'));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -173,7 +193,8 @@ test('installed extension recovers a lost start reply after reopening without ch
   const root = await mkdtemp(join(tmpdir(), 'batch-extension-'));
   let context, service, server, calls = 0;
   try {
-    service = await openService({ ...deps(root), runner: async () => { calls++; return { percent: 100, grade: '10 из 10 (100%)', correct: 1, total: 1, reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } });
+    service = await openService({ ...deps(root), runner: async () => { calls++; return { percent: 100, grade: '10 из 10 (100%)', correct: 1, total: 1,
+      sources: [{ slot: '1', provider: 'memory', cached: true, feedback: 'correct' }], reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } });
     server = serviceServer(service, 'synthetic-token', 49816);
     let lostReply = false, dropReplies = true;
     server.prependListener('request', (req, res) => {
@@ -218,6 +239,17 @@ test('installed extension recovers a lost start reply after reopening without ch
     await reopened.locator('#nav-logs').click();
     assert.equal(await reopened.locator('#logs-view').isVisible(), true);
     assert.equal(await reopened.locator('.events li').count(), 3);
+    await reopened.evaluate(() => { navigator.clipboard.writeText = async text => { globalThis.copiedReport = text; }; });
+    await reopened.locator('#copy-report').click();
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Moodle Batch — отчёт запуска/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Тест 20/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: correct/);
+    await reopened.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; });
+    await reopened.locator('#copy-report').click();
+    assert.equal(await reopened.locator('#log-export').isVisible(), true);
+    assert.match(await reopened.locator('#log-export').inputValue(), /ЭТАПЫ/);
+    await reopened.setViewportSize({ width: 1440, height: 720 });
+    assert.equal(await reopened.locator('.run-column').evaluate(el => { el.scrollTop = el.scrollHeight; return el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1; }), true);
     await reopened.locator('#errors-only').check();
     assert.match(await reopened.locator('#jobs').textContent(), /Запусков с ошибками нет/);
     await reopened.locator('#errors-only').uncheck();

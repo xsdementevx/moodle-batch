@@ -62,12 +62,12 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     overview.summary = courseSummary(overview.courses.flatMap(item => item.quizzes));
   };
   const recentGrades = new Map();
-  const refresh = () => {
+  const refresh = ({ detailed = false } = {}) => {
     if (scanTask) return scanTask;
     const previous = overview;
     scanError = null;
-    scanTask = Promise.resolve().then(() => moodle.connect?.()).then(() => scan(moodle, store, { onProgress: next => {
-      overview = { ...next, courses: next.courses.map(course => course.status === 'loading'
+    scanTask = Promise.resolve().then(() => moodle.connect?.()).then(() => scan(moodle, store, { previous, detailed: detailed || !previous, onProgress: next => {
+      overview = { ...next, courses: (next.courses.length ? next.courses : previous?.courses || []).map(course => course.status === 'loading'
         ? previous?.courses.find(old => old.courseId === course.courseId) || course : course) };
       for (const result of recentGrades.values()) updateGrade(result);
     } })).then(async result => {
@@ -195,7 +195,8 @@ export function serviceServer(service, token, port) {
       if (input.userScope !== service.state().userScope) return reply(403, { error: 'USER_SCOPE_MISMATCH' });
       if (url.pathname === '/jobs') return reply(202, await service.start(input));
       if (url.pathname === '/stop') return reply(200, await service.stop(input.requestId));
-      service.refresh(); return reply(202, { running: true });
+      if (input.detailed !== undefined && typeof input.detailed !== 'boolean') return reply(400, { error: 'INVALID_REFRESH' });
+      service.refresh({ detailed: input.detailed === true }); return reply(202, { running: true });
     } catch (error) { reply(409, { error: safeCode(error) }); }
   });
 }

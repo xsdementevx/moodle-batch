@@ -152,6 +152,18 @@ export function questionFingerprint(q, context) {
     q.memory?.excludedAnswers || [], ...(q.memory?.matchingRows ? [q.memory.matchingRows] : [])]);
 }
 
+export async function pendingModelTests(questions, journalDir) {
+  const unresolved = questions.filter(q => q.memory?.status === 'unresolved');
+  const blocked = new Set();
+  const files = await readdir(journalDir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+  for (const name of files.filter(n => /^[a-f0-9]{64}\.json$/u.test(n))) {
+    const saved = JSON.parse(await readFile(join(journalDir, name), 'utf8'));
+    if (saved.state !== 'pending') continue;
+    for (const q of unresolved) if (!saved.questionIds || saved.questionIds.includes(`${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`)) blocked.add(q.quizId);
+  }
+  return blocked;
+}
+
 export async function solveTest(questions, context, { journalDir, jev = requestJev, web, stopped = () => false, progress = async () => {} } = {}) {
   if (new Set(questions.map(q => q.slot)).size !== questions.length) throw new Error('DUPLICATE_QUESTION_ID');
   const check = () => { if (stopped()) throw new Error('STOPPED'); };

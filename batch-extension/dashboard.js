@@ -17,15 +17,16 @@ const belowMaximum = quiz => Number.isFinite(quiz.percent) && quiz.percent >= 0 
 const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
 const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на компьютере.', USER_SCOPE_MISMATCH: 'Аккаунт Moodle отличается от аккаунта сервиса.',
   LOGIN_REQUIRED: 'Сессия Moodle истекла. Войдите в Moodle, обновите cookies.json и нажмите «Обновить анализ». Показаны сохранённые оценки.',
-  PAIRING_REQUIRED: 'Обновите расширение из папки, подготовленной сервисом.', UNKNOWN_MODEL_OUTCOME: 'Нужно проверить сохранённый запрос модели.',
-  UNRESOLVED_SUBMISSION: 'Есть вопросы без надёжного ответа. Отправка остановлена.', MOODLE_PREFLIGHT_REQUIRED: 'Moodle требует подтверждение перед началом.',
+  PAIRING_REQUIRED: 'Обновите расширение из папки, подготовленной сервисом.', UNKNOWN_MODEL_OUTCOME: 'Есть незавершённый сохранённый запрос модели для этого теста. Повторная отправка заблокирована; остальные тесты могут решаться.',
+  START_UNAVAILABLE: 'Moodle не предоставил форму начала попытки. Откройте тест, чтобы проверить сроки, доступ и лимит попыток.',
+  UNRESOLVED_SUBMISSION: 'Есть вопросы без надёжного ответа. Отправка остановлена.', MOODLE_PREFLIGHT_REQUIRED: 'Moodle требует подтвердить начало попытки. Откройте тест и подтвердите условия, затем запустите его здесь — активная попытка будет продолжена.',
   QUESTION_PACKET_TOO_LARGE: 'Один вопрос превышает размер запроса модели. Решение остановлено; попытка не отправлена.',
   SERVICE_RESTARTED: 'Сервис был перезапущен. Проверьте последнюю попытку перед новым запуском.', JOB_ALREADY_RUNNING: 'Другой запуск уже выполняется.' };
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
 const node = (tag, text, className) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; };
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 const effortLabel = { Instant: 'Лёгкое размышление', Medium: 'Среднее размышление', High: 'Высокое размышление', instant: 'Лёгкое размышление', medium: 'Среднее размышление', high: 'Высокое размышление' };
-const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
+const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
 function matches(q, course) {
   const search = $('search').value.trim().toLocaleLowerCase('ru');
@@ -33,7 +34,7 @@ function matches(q, course) {
   if ($('course-filter').value && course.courseId !== $('course-filter').value) return false;
   if ($('low').checked && !belowMaximum(q)) return false;
   return ({ all: true, low: belowMaximum(q), new: !Number.isFinite(q.percent), maximum: q.percent === 100,
-    selected: selected.has(q.quizId), error: Boolean(q.error || q.reviewError || q.analysis?.conflict || q.analysis?.unsupported) })[$('grade-filter').value];
+    active: Boolean(q.activeAttempt), selected: selected.has(q.quizId), error: Boolean(q.error || q.reviewError || q.analysis?.conflict || q.analysis?.unsupported) })[$('grade-filter').value];
 }
 function visibleQuizzes() { return (current?.overview?.courses || []).flatMap(course => course.quizzes.filter(q => matches(q, course))); }
 function buttons() {
@@ -44,7 +45,7 @@ function buttons() {
   for (const control of $('courses').querySelectorAll('input[type=checkbox],.course-select')) control.disabled = locked;
   $('stop').disabled = !busy() || busy().stopRequested;
   $('stop').textContent = busy()?.stopRequested ? 'Остановка запрошена…' : 'Остановить после текущего действия';
-  $('refresh').disabled = Boolean(current?.running) || pending;
+  $('refresh').disabled = Boolean(current?.running) || pending; $('analyze').disabled = $('refresh').disabled;
   $('selection-count').textContent = selected.size ? `Выбрано тестов: ${selected.size}` : 'Ничего не выбрано';
   const shown = new Set(visibleQuizzes().map(q => q.quizId));
   const hidden = [...selected].filter(id => !shown.has(id)).length;
@@ -55,7 +56,7 @@ function showProgress() {
   const job = busy() || current?.jobs.at(-1);
   if (!job) return;
   $('job-title').textContent = jobLabel(job);
-  $('job-badge').textContent = ['queued', 'running'].includes(job.status) ? 'В работе' : job.error ? 'Прерван' : 'Завершён';
+  $('job-badge').textContent = ['queued', 'running'].includes(job.status) ? 'В работе' : job.error || job.results.some(q => q.error) ? 'Есть ошибки' : 'Завершён';
   $('job-badge').classList.toggle('active', ['queued', 'running'].includes(job.status));
   const detail = job.current;
   $('job-detail').textContent = detail ? [detail.quizId ? `Тест ${detail.quizId}` : `Пакет из ${detail.tests || job.quizIds.length} тестов`, `Попытка ${detail.round || 1} из ${job.maxAttempts}`, detail.provider, effortLabel[detail.reasoning] || detail.reasoning, detail.questions ? `${detail.questions} вопросов` : ''].filter(Boolean).join(' · ') : `Выбрано ${job.quizIds.length} тестов · ${time(job.finishedAt || job.createdAt)}`;
@@ -65,7 +66,7 @@ function showProgress() {
   $('job-results').replaceChildren(node('span', `100%: ${job.results.filter(q => q.attempts.at(-1)?.percent === 100).length}`, 'good'), node('span', `Ошибки: ${job.results.filter(q => q.error).length}`, 'job-error'), node('span', `Ниже 100%: ${job.results.filter(q => belowMaximum(q.attempts.at(-1) || {})).length}`, 'low'));
 }
 function eventText(event) {
-  if (event.error) return errors[event.error] || event.error;
+  if (event.error) return [event.quizId ? `Тест ${event.quizId}` : '', event.round ? `попытка ${event.round}` : '', errors[event.error] || event.error].filter(Boolean).join(' · ');
   if (event.kind === 'result') return `Тест ${event.quizId}: ${event.percent === null ? 'оценка не раскрыта' : `${event.percent}%`}`;
   if (event.kind === 'stop') return 'Запрошена остановка после текущего действия';
   if (event.kind === 'stopped') return 'Запуск остановлен';
@@ -73,43 +74,84 @@ function eventText(event) {
   return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.round ? `попытка ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : ''].filter(Boolean).join(' · ');
 }
 let jobsSignature = '';
-function showJobs() {
-  showProgress(); $('log-count').textContent = current?.jobs.length || 0;
-  const signature = JSON.stringify([current?.jobs, $('errors-only').checked]);
-  if (signature === jobsSignature) return; jobsSignature = signature;
-  const opened = new Set([...$('jobs').querySelectorAll('details[open]')].map(el => el.dataset.job));
-  $('jobs').replaceChildren();
-  for (const job of [...(current?.jobs || [])].reverse()) {
-    if ($('errors-only').checked && !job.error && !job.results.some(q => q.error)) continue;
-    const box = node('article', undefined, 'job');
-    const heading = node('div', undefined, 'job-heading'); heading.append(node('strong', jobLabel(job)), node('span', `${job.quizIds.length} тестов`, 'badge'));
-    box.append(heading, node('p', `${time(job.createdAt)} · попыток на тест: ${job.maxAttempts}`, 'job-time'));
-    if (job.error) box.append(node('p', errors[job.error] || job.error, 'job-error'));
-    const resultDetails = node('details'); resultDetails.dataset.job = `${job.requestId}:results`; resultDetails.open = opened.has(resultDetails.dataset.job);
-    resultDetails.append(node('summary', `Результаты тестов (${job.results.length})`));
-    for (const result of job.results) {
-      if ($('errors-only').checked && !result.error) continue;
-      const last = result.attempts.at(-1);
-      const p = node('p', `Тест ${result.quizId}: ${last ? last.grade || `${last.correct}/${last.total} правильных` : result.error ? 'остановлен' : result.status === 'stopped' ? 'не отправлен' : 'проверяется'}${result.error ? ` · ${errors[result.error] || result.error}` : ''}`, last?.percent === 100 ? 'good' : result.error ? 'job-error' : 'low');
-      if (last?.reviewUrl) {
-        try { const url = new URL(last.reviewUrl); if (url.origin === current.origin && url.pathname === '/mod/quiz/review.php') { const link = node('a', ' Результат Moodle ↗'); link.href = url.href; link.target = '_blank'; link.rel = 'noopener'; p.append(link); } } catch { /* malformed review URL */ }
-      }
-      resultDetails.append(p);
-    }
-    box.append(resultDetails);
-    if (job.events?.length) {
-      const details = node('details'); details.dataset.job = `${job.requestId}:events`; details.open = opened.has(details.dataset.job) || job.status === 'running'; details.append(node('summary', `Этапы запуска (${job.events.length})`));
-      const list = node('ol', undefined, 'events');
-      for (const event of [...job.events].reverse()) {
-        if ($('errors-only').checked && !event.error) continue;
-        const row = node('li', undefined, event.error ? 'error' : ''); const stamp = node('time', time(event.at)); stamp.dateTime = event.at; row.append(stamp, node('span', eventText(event))); list.append(row);
-      }
-      details.append(list); box.append(details);
-    } else box.append(node('p', 'Для старого запуска сохранены результаты. Подробные этапы записываются с новой версии.', 'muted'));
-    $('jobs').append(box);
-  }
-  if (!$('jobs').childElementCount) $('jobs').append(node('div', $('errors-only').checked ? 'Запусков с ошибками нет.' : 'Пока нет запусков. Выберите тесты и начните решение.', 'empty'));
+function sourceSummary(attempt) {
+  const sources = attempt?.sources || [];
+  return [['memory', 'Память'], ['jev', 'Jev'], ['gpt_web', 'GPT Web']].map(([provider, label]) => sources.some(s => s.provider === provider) ? `${label}: ${sources.filter(s => s.provider === provider).length}` : '').filter(Boolean).join(' · ');
 }
+function reportFor(job) {
+  if (!job) return '';
+  const lines = ['Moodle Batch — отчёт запуска', `Запуск: ${job.requestId}`, `Начало: ${time(job.createdAt)}`, `Статус: ${jobLabel(job)}`, `Тесты: ${job.quizIds.join(', ')}`, `Попыток на тест: ${job.maxAttempts}`, '', 'РЕЗУЛЬТАТЫ'];
+  if (job.error) lines.push(`Ошибка запуска: ${job.error} — ${errors[job.error] || job.error}`);
+  for (const result of job.results) {
+    const last = result.attempts.at(-1);
+    lines.push(`Тест ${result.quizId} | ${result.status} | попыток: ${result.attempts.length} | оценка: ${last?.percent ?? 'нет'}${Number.isFinite(last?.percent) ? '%' : ''}${result.error ? ` | ${result.error}: ${errors[result.error] || result.error}` : ''}`);
+    for (const [i, attempt] of result.attempts.entries()) {
+      lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
+      for (const source of attempt.sources || []) lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${source.feedback || 'не раскрыто'}`);
+    }
+  }
+  lines.push('', 'ЭТАПЫ (по времени)');
+  for (const event of job.events || []) lines.push(`${event.at} | ${eventText(event)}${event.error ? ` [${event.error}]` : ''}`);
+  if (!job.events?.length) lines.push('Подробные этапы этого старого запуска не записывались.');
+  return lines.join('\n');
+}
+function chosenJob() { return current?.jobs.find(job => job.requestId === $('log-job').value); }
+function showJobs(force = false) {
+  showProgress(); $('log-count').textContent = current?.jobs.length || 0;
+  const previous = $('log-job').value;
+  const jobs = [...(current?.jobs || [])].reverse();
+  const optionsSignature = jobs.map(job => `${job.requestId}:${job.status}:${job.results.filter(q => q.error).length}`).join('|');
+  if ($('log-job').dataset.signature !== optionsSignature) {
+    $('log-job').replaceChildren(...jobs.map(job => new Option(`${time(job.createdAt)} · ${job.quizIds.length} тестов · ${jobLabel(job)}`, job.requestId)));
+    if (jobs.some(job => job.requestId === previous)) $('log-job').value = previous;
+    $('log-job').dataset.signature = optionsSignature;
+  }
+  const job = chosenJob(); $('copy-report').disabled = !job;
+  const signature = JSON.stringify([job, $('errors-only').checked]);
+  if (!force && signature === jobsSignature) return; jobsSignature = signature;
+  $('log-export').value = reportFor(job);
+  $('jobs').replaceChildren();
+  if (!job) { $('jobs').append(node('div', 'Пока нет запусков. Выберите тесты и начните решение.', 'empty')); return; }
+  if ($('errors-only').checked && !job.error && !job.results.some(q => q.error)) { $('jobs').append(node('div', 'Запусков с ошибками нет.', 'empty')); return; }
+  const box = node('article', undefined, 'job');
+  const heading = node('div', undefined, 'job-heading'); heading.append(node('strong', jobLabel(job)), node('span', `${job.results.filter(q => q.error).length} ошибок · ${job.results.filter(q => q.attempts.at(-1)?.percent === 100).length} на 100%`, 'badge'));
+  box.append(heading, node('p', `ID: ${job.requestId}`, 'job-time'));
+  if (job.error) box.append(node('p', errors[job.error] || job.error, 'job-error'));
+  const table = node('table', undefined, 'job-results'); table.setAttribute('aria-label', 'Результаты выбранного запуска');
+  const head = node('thead'); const header = node('tr'); ['Тест', 'Состояние', 'Оценка', 'Подробности'].forEach(text => { const th = node('th', text); th.scope = 'col'; header.append(th); }); head.append(header); table.append(head);
+  const body = node('tbody');
+  for (const result of job.results) {
+    if ($('errors-only').checked && !result.error) continue;
+    const last = result.attempts.at(-1); const row = node('tr');
+    const test = node('td'); const link = node('a', result.quizId); link.href = `${current.origin}/mod/quiz/view.php?id=${encodeURIComponent(result.quizId)}`; link.target = '_blank'; link.rel = 'noopener'; test.append(link);
+    const status = result.error ? 'Остановлен' : last?.percent === 100 ? '100%' : result.status === 'running' ? 'В работе' : result.status === 'stopped' ? 'Остановлен' : 'Нужна проверка';
+    const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток: ${result.attempts.length}`);
+    if (sourceSummary(last)) description.append(node('small', sourceSummary(last), 'quiz-meta'));
+    if (result.error) description.append(node('code', result.error, 'error-code'));
+    if (last?.reviewUrl) { try { const url = new URL(last.reviewUrl); if (url.origin === current.origin && url.pathname === '/mod/quiz/review.php') { const review = node('a', ' Результат Moodle ↗'); review.href = url.href; review.target = '_blank'; review.rel = 'noopener'; description.append(review); } } catch { /* malformed link */ } }
+    row.append(test, node('td', status, result.error ? 'job-error' : last?.percent === 100 ? 'good' : ''), node('td', Number.isFinite(last?.percent) ? `${last.percent}%` : '—'), description); body.append(row);
+  }
+  table.append(body); box.append(table, node('h3', 'Хронология запуска', 'events-heading'));
+  const list = node('ol', undefined, 'events');
+  for (const event of job.events || []) {
+    if ($('errors-only').checked && !event.error) continue;
+    const row = node('li', undefined, event.error ? 'error' : ''); const stamp = node('time', new Date(event.at).toLocaleTimeString('ru-RU')); stamp.dateTime = event.at;
+    const content = node('div'); content.append(node('span', event.error ? `Тест ${event.quizId || '—'} · остановлен` : eventText(event), 'event-title'));
+    if (event.error) content.append(node('span', errors[event.error] || event.error, 'event-info'), node('code', event.error, 'error-code'));
+    row.append(stamp, content); list.append(row);
+  }
+  box.append(list);
+  if (!job.events?.length) box.append(node('p', 'Для старого запуска сохранены результаты. Подробные этапы записываются с новой версии.', 'muted'));
+  $('jobs').append(box);
+}
+$('log-job').addEventListener('change', () => { $('copy-status').textContent = ''; showJobs(true); });
+$('copy-report').addEventListener('click', async () => {
+  const report = reportFor(chosenJob()); if (!report) return;
+  $('log-export').value = report;
+  try { await navigator.clipboard.writeText(report); $('copy-status').textContent = 'Отчёт скопирован. Вставьте его в сообщение.'; }
+  catch { $('report-text').open = true; $('log-export').focus(); $('log-export').select(); $('copy-status').textContent = 'Браузер не разрешил копирование. Текст выделен — нажмите Ctrl+C.'; }
+});
+
 let overviewSignature = '';
 function render(overview, cached = false, force = false) {
   if (!overview || overview.userScope !== userScope || overview.origin !== 'https://sdo.sibupk.su') throw new Error('USER_SCOPE_MISMATCH');
@@ -119,14 +161,16 @@ function render(overview, cached = false, force = false) {
   $('metric-max').textContent = all.filter(q => q.percent === 100).length;
   $('metric-low').textContent = all.filter(belowMaximum).length;
   $('metric-new').textContent = all.filter(q => !Number.isFinite(q.percent)).length;
+  $('active-filter').textContent = `Активные попытки: ${all.filter(q => q.activeAttempt).length}`;
+  $('analysis-summary').textContent = `С подробным анализом: ${all.filter(q => q.analysis).length}/${all.length} · требуют проверки: ${all.filter(q => q.error || q.reviewError || q.analysis?.conflict).length}`;
   const progress = overview.progress;
-  const scanningCourses = overview.phase === 'courses';
+  const scanningCourses = overview.phase === 'courses' || overview.detailed === false;
   $('scan-progress').max = (scanningCourses ? progress.totalCourses : progress.totalTests) || 1;
   $('scan-progress').value = (scanningCourses ? progress.courses : progress.tests) || 0;
-  $('scan-detail').textContent = scanningCourses ? `Курсы: ${progress.courses} из ${progress.totalCourses}` : `Проверено тестов: ${progress.tests} из ${progress.totalTests}`;
+  $('scan-detail').textContent = overview.detailed === false ? `Оценки: ${progress.courses} из ${progress.totalCourses} курсов · состояния попыток из последнего подробного анализа` : scanningCourses ? `Курсы: ${progress.courses} из ${progress.totalCourses}` : `Проверено тестов: ${progress.tests} из ${progress.totalTests}`;
   $('scan-badge').textContent = cached ? 'Сохранено' : current?.error ? 'Остановлен' : current?.running ? 'Обновляется' : 'Готово';
   $('scan-badge').classList.toggle('active', Boolean(current?.running));
-  $('updated').textContent = overview.completedAt ? `Обновлено: ${time(overview.completedAt)}` : 'Оценки появляются по мере проверки.';
+  $('updated').textContent = overview.completedAt ? `Обновлено: ${time(overview.completedAt)}${Number.isFinite(overview.elapsedMs) ? ` · анализ занял ${Math.round(overview.elapsedMs / 1000)} с` : ''}` : 'Оценки появляются по мере проверки.';
   notice(cached ? 'Показаны сохранённые оценки. Подключаемся к сервису…' : current?.running ? 'Анализ обновляется. Вы можете выбирать тесты, пока появляются оценки.' : 'Данные актуальны. Выберите тесты для решения.');
   const signature = JSON.stringify(overview);
   if (!force && signature === overviewSignature) { buttons(); return; } overviewSignature = signature;
@@ -148,7 +192,14 @@ function render(overview, cached = false, force = false) {
     for (const q of quizzes) {
       const row = node('div', undefined, 'quiz'); const check = node('input'); check.type = 'checkbox'; check.dataset.quiz = q.quizId; check.checked = selected.has(q.quizId); check.setAttribute('aria-label', `Выбрать тест ${q.title}`);
       check.addEventListener('change', () => { check.checked ? selected.add(q.quizId) : selected.delete(q.quizId); if ($('grade-filter').value === 'selected') render(overview, false, true); else { buttons(); select.textContent = quizzes.every(q => selected.has(q.quizId)) ? 'Снять выбор' : 'Выбрать'; } });
-      const a = node('a', q.topic ? `${q.topic} — ${q.title}` : q.title); a.href = `${overview.origin}/mod/quiz/view.php?id=${encodeURIComponent(q.quizId)}`; a.target = '_blank'; a.rel = 'noopener';
+      const a = node('a', undefined, 'quiz-link');
+      a.append(node('div', q.topic ? `${q.topic} — ${q.title}` : q.title));
+      const info = [q.activeAttempt ? 'Активная попытка · продолжение при запуске' : q.preflightRequired ? 'Нужно подтвердить начало в Moodle' : '', Number.isInteger(q.attempts) ? `Попыток: ${q.attempts}` : ''];
+      if (q.analysis) info.push(`В памяти: ${q.analysis.known}/${q.analysis.total}`, `Нерешённых: ${q.analysis.unresolved}`, q.analysis.withExclusions ? `С исключёнными ответами: ${q.analysis.withExclusions}` : '', q.analysis.conflict ? `Конфликтов: ${q.analysis.conflict}` : '', q.analysis.unsupported ? `Не поддерживается: ${q.analysis.unsupported}` : '');
+      if (q.detailCheckedAt) info.push(`Попытки проверены: ${time(q.detailCheckedAt)}`);
+      else if (q.analysis || q.activeAttempt || q.attempts) info.push('Состояние попыток — из сохранённого подробного анализа');
+      if (q.error || q.reviewError) info.push('Анализ требует проверки');
+      if (info.some(Boolean)) a.append(node('small', info.filter(Boolean).join(' · '), q.activeAttempt ? 'quiz-meta resume' : 'quiz-meta')); a.href = `${overview.origin}/mod/quiz/view.php?id=${encodeURIComponent(q.quizId)}`; a.target = '_blank'; a.rel = 'noopener';
       const score = node('span', !Number.isFinite(q.percent) ? 'Без оценки' : `${q.percent}%`, `score ${belowMaximum(q) ? 'low' : q.percent === 100 ? 'good' : ''}`);
       if (q.error || q.reviewError) score.title = errors[q.error || q.reviewError] || q.error || q.reviewError;
       row.append(check, a, score); details.append(row);
@@ -169,9 +220,11 @@ function navigate(logs) {
   if (logs) $('nav-logs').setAttribute('aria-current', 'page'); else $('nav-tests').setAttribute('aria-current', 'page');
   history.replaceState(null, '', logs ? '#logs' : '#tests');
   $('page-title').textContent = logs ? 'Журнал запусков' : 'Ваши тесты';
+  document.querySelector('.subtitle').textContent = logs ? 'История решений, причины остановки и отчёт для передачи.' : 'Выберите тесты. Следите за решением и результатами в одном месте.';
 }
+$('active-filter').addEventListener('click', () => { navigate(false); $('search').value = ''; $('course-filter').value = ''; $('grade-filter').value = 'active'; $('low').checked = false; if (current?.overview) render(current.overview, false, true); $('grade-filter').focus(); });
 $('nav-tests').addEventListener('click', () => navigate(false)); $('nav-logs').addEventListener('click', () => navigate(true)); $('open-logs').addEventListener('click', () => { navigate(true); $('nav-logs').focus(); });
-$('errors-only').addEventListener('change', showJobs);
+$('errors-only').addEventListener('change', () => showJobs(true));
 for (const id of ['search', 'course-filter', 'grade-filter']) $(id).addEventListener(id === 'search' ? 'input' : 'change', () => { if (id === 'grade-filter') $('low').checked = $('grade-filter').value === 'low'; if (current?.overview) render(current.overview, false, true); });
 $('reset-filters').addEventListener('click', () => { $('search').value = ''; $('course-filter').value = ''; $('grade-filter').value = 'all'; $('low').checked = false; if (current?.overview) render(current.overview, false, true); });
 
@@ -198,7 +251,7 @@ async function load() {
       await chrome.storage.local.remove('pendingJob'); pendingIntent = null; buttons();
     }
   } catch (error) { connected = false; notice(errors[error.message] || error.message, true); $('connection').textContent = 'Нет подключения'; $('connection-dot').classList.remove('online'); $('run').disabled = true; }
-  finally { pending = false; $('refresh').disabled = Boolean(current?.running); timer = setTimeout(load, busy() || current?.running ? 2000 : 10000); }
+  finally { pending = false; $('refresh').disabled = Boolean(current?.running); $('analyze').disabled = $('refresh').disabled; timer = setTimeout(load, busy() || current?.running ? 2000 : 10000); }
 }
 $('low').addEventListener('change', () => { $('grade-filter').value = $('low').checked ? 'low' : 'all'; if (current?.overview) render(current.overview, false, true); });
 $('select').addEventListener('click', () => {
@@ -206,6 +259,7 @@ $('select').addEventListener('click', () => {
   if (current?.overview) render(current.overview, false, true);
 });
 $('clear').addEventListener('click', () => { selected.clear(); if (current?.overview) render(current.overview, false, true); });
+$('analyze').addEventListener('click', async () => { try { await api('refresh', { detailed: true }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('refresh').addEventListener('click', async () => { try { await api('refresh'); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('stop').addEventListener('click', async () => { try { await api('stop', { requestId: busy().requestId }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 $('run').addEventListener('click', async () => {

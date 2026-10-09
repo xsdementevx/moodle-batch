@@ -35,7 +35,7 @@ async function main() {
     // must not mark the still-running service's jobs as interrupted.
     server = serviceServer({
       state: () => { if (!service) throw new Error('SERVICE_STARTING'); return service.state(); },
-      start: input => service.start(input), stop: id => service.stop(id), refresh: () => service.refresh(),
+      start: input => service.start(input), stop: id => service.stop(id), refresh: options => service.refresh(options),
     }, token, port);
     await new Promise((done, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', done); });
     moodle = await openConnection({ authFile: resolve(values.auth), origin: values.origin, root });

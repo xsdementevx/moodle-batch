@@ -116,3 +116,25 @@ test('grade-page userscript renders course details as text and supports refreshi
     assert.match(await page.locator('.moodle-batch-summary summary').innerText(), /сохранённые данные/u);
   } finally { await browser.close(); }
 });
+
+test('quick grade refresh skips attempt pages and detailed refresh skips imported old reviews', async () => {
+  const origin = 'https://moodle.example'; const calls = []; let imports = 0;
+  const moodle = { origin, userScope: '42', courses: async () => [{ courseId: '10', title: 'Course' }],
+    grades: async () => [{ quizId: '20', title: 'Test', percent: 95 }],
+    quizzes: async () => { calls.push('discover'); return [{ quizId: '20', title: 'Test' }]; },
+    read: async () => { calls.push('view'); return { quizId: '20', courseId: '10', userScope: '42', startForm: {}, attemptSummaries: [{}, {}], reviews: [`${origin}/mod/quiz/review.php?attempt=1&cmid=20`, `${origin}/mod/quiz/review.php?attempt=2&cmid=20`] }; },
+    collect: async url => { calls.push(new URL(url).searchParams.get('attempt')); return { kind: 'review', quizId: '20', courseId: '10', userScope: '42', questions: [{}] }; } };
+  const store = { importReview: () => imports++, lookup: () => ({ status: 'known', excludedAnswers: [] }) };
+  const first = await scanOverview(moodle, store);
+  assert.equal(imports, 2);
+  calls.length = 0;
+  const quick = await scanOverview(moodle, store, { previous: first, detailed: false });
+  assert.deepEqual(calls, []);
+  assert.equal(quick.courses[0].quizzes[0].percent, 95);
+  assert.equal(quick.courses[0].quizzes[0].analysis.known, 1);
+  assert.equal(quick.courses[0].quizzes[0].detailCheckedAt, first.courses[0].quizzes[0].detailCheckedAt);
+  calls.length = 0;
+  await scanOverview(moodle, store, { previous: quick });
+  assert.deepEqual(calls, ['discover', 'view', '2']);
+  assert.equal(imports, 3, 'latest result stays fresh; old imported result is skipped');
+});

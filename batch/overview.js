@@ -27,17 +27,19 @@ export function courseSummary(quizzes) {
     checked: quizzes.filter(q => q.checked).length, errors: quizzes.filter(q => q.error || q.reviewError).length };
 }
 
-export async function scanOverview(moodle, store, { concurrency = 6, onProgress = () => {} } = {}) {
+export async function scanOverview(moodle, store, { concurrency = 6, onProgress = () => {}, detailed = true, previous = null } = {}) {
+  if (previous?.origin !== moodle.origin || previous?.userScope !== moodle.userScope) previous = null;
   const started = Date.now();
   const courses = await moodle.courses();
   const snapshot = { schemaVersion: 1, origin: moodle.origin, userScope: moodle.userScope,
-    startedAt: new Date(started).toISOString(), status: 'loading', phase: 'courses',
+    startedAt: new Date(started).toISOString(), status: 'loading', phase: 'courses', detailed,
     progress: { courses: 0, totalCourses: courses.length, tests: 0, totalTests: 0 }, courses: [] };
   onProgress(snapshot);
   snapshot.courses = courses.map(course => ({ ...course, quizzes: [], status: 'loading', summary: courseSummary([]) }));
   await mapConcurrent(snapshot.courses, concurrency, async course => {
     let grades = [];
     let refs = [];
+    const old = previous?.courses.find(c => c.courseId === course.courseId);
     try { grades = await moodle.grades(course.courseId); }
     catch (error) { course.gradeError = safeCode(error); }
     // Show gradebook results before course discovery and detailed attempt checks finish.
@@ -45,11 +47,11 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
       url: `${moodle.origin}/mod/quiz/view.php?id=${q.quizId}`, status: gradeStatus(q.percent), checked: false }));
     course.status = 'discovering'; course.summary = courseSummary(course.quizzes);
     onProgress(snapshot);
-    try { refs = await moodle.quizzes({ origin: moodle.origin, userScope: moodle.userScope, courseId: course.courseId }); }
+    try { refs = !detailed && old ? old.quizzes : await moodle.quizzes({ origin: moodle.origin, userScope: moodle.userScope, courseId: course.courseId }); }
     catch (error) { course.discoveryError = safeCode(error); }
     const combined = new Map(grades.map(q => [q.quizId, { ...q, topic: '' }]));
     for (const ref of refs) combined.set(ref.quizId, { ...ref, percent: combined.get(ref.quizId)?.percent ?? null });
-    course.quizzes = [...combined.values()].map(q => ({ ...q, courseId: course.courseId,
+    course.quizzes = [...combined.values()].map(q => ({ ...(!detailed ? old?.quizzes.find(prior => prior.quizId === q.quizId) : null), ...q, courseId: course.courseId,
       url: `${moodle.origin}/mod/quiz/view.php?id=${q.quizId}`, status: gradeStatus(q.percent), checked: false }));
     course.status = course.gradeError || course.discoveryError ? 'partial' : 'ready';
     course.summary = courseSummary(course.quizzes);
@@ -57,6 +59,12 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
     snapshot.progress.totalTests += course.quizzes.length;
     onProgress(snapshot);
   });
+  if (!detailed) {
+    snapshot.phase = 'complete'; snapshot.completedAt = new Date().toISOString(); snapshot.elapsedMs = Date.now() - started;
+    snapshot.status = snapshot.courses.some(c => c.status === 'partial') ? 'partial' : 'ready';
+    snapshot.summary = courseSummary(snapshot.courses.flatMap(c => c.quizzes));
+    onProgress(snapshot); return snapshot;
+  }
   snapshot.phase = 'tests';
   onProgress(snapshot);
   const jobs = snapshot.courses.flatMap(course => course.quizzes.map(quiz => ({ course, quiz })));
@@ -70,15 +78,20 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
       quiz.preflightRequired = Boolean(view.startForm?.preflightRequired);
       quiz.attempts = view.attemptSummaries.length;
       quiz.latestAttempt = view.attemptSummaries.at(-1) || null;
+      quiz.detailCheckedAt = new Date().toISOString();
       if (quiz.percent === null && !quiz.attempts && !view.reviews.length && !quiz.activeAttempt) quiz.status = 'unattempted';
       let latest;
-      for (const href of view.reviews) {
+      const imported = new Set(previous?.courses.find(c => c.courseId === course.courseId)?.quizzes.find(q => q.quizId === quiz.quizId)?.importedReviews || []);
+      quiz.importedReviews = [...imported];
+      for (const href of [...new Set(view.reviews)]) {
+        if (imported.has(href) && href !== view.reviews.at(-1)) continue;
         try {
           const url = new URL(href); url.searchParams.set('showall', '1');
           const review = await moodle.collect(url.href);
           if (review.kind !== 'review' || review.quizId !== quiz.quizId || review.courseId !== course.courseId
               || review.userScope !== moodle.userScope) throw new Error('PAGE_SCOPE_MISMATCH');
           store.importReview(review.questions);
+          imported.add(href); quiz.importedReviews = [...imported];
           latest = review;
         } catch (error) { quiz.reviewError = safeCode(error); }
       }

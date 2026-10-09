@@ -196,7 +196,8 @@ export async function openParser() {
         const expectedSlots = [...document.querySelectorAll('.qnbutton')].map(q => /^quiznavbutton(\d+)$/u.exec(q.id)?.[1]).filter(Boolean);
         const form = document.querySelector('#responseform');
         const startForms = [...document.forms].filter(f => new URL(f.getAttribute('action') || '', base).pathname === '/mod/quiz/startattempt.php');
-        const start = startForms.length === 1 ? startForms[0] : null;
+        const entryForms = startForms.filter(f => !f.querySelector('input[name="_qf__mod_quiz_preflight_check_form"]'));
+        const start = entryForms.length === 1 ? entryForms[0] : null;
         return {
           login: Boolean(document.querySelector('#login,form[action*="/login/"]')),
           bodyId: document.body.id, courseId, quizId, userScope, attemptId, page: pageNumber,
@@ -218,7 +219,7 @@ export async function openParser() {
           startForm: kind === 'view' && start ? {
             action: new URL(start.getAttribute('action') || '', base).href, method: start.method,
             fields: [...start.querySelectorAll('input[type=hidden][name]')].map(input => [input.name, input.value]),
-            preflightRequired: Boolean(document.querySelector('#mod_quiz_preflight_form,.quizsecuremoderequired')),
+            preflightRequired: Boolean(document.querySelector('#mod_quiz_preflight_form,.quizsecuremoderequired,input[name="_qf__mod_quiz_preflight_check_form"]')),
           } : null,
           pageUrls: [...new Set(pageUrls)], expectedSlots,
         };

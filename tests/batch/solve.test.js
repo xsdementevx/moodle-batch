@@ -91,6 +91,10 @@ test('conversation parser validates identity, final answer and actual web tool e
   assert.throws(() => parseConversation(messages, [q('1')], 'foreign'), /FOREIGN_CONVERSATION/);
   assert.throws(() => parseConversation([...messages, messages[3]], [q('1')], 'nonce'), /FOREIGN_CONVERSATION/);
   assert.throws(() => parseConversation([...messages.slice(0, 3), { role: 'assistant', endTurn: true }], [q('1')], 'nonce'), /RESPONSE_NOT_READY/);
+  const clarified = [{ role: 'user', text: 'requestId earlier' }, { role: 'assistant', endTurn: true, contentType: 'reasoning_recap' }, ...messages];
+  assert.deepEqual(parseConversation(clarified, [q('1')], 'nonce', ['earlier']), answers);
+  assert.throws(() => parseConversation(clarified, [q('1')], 'nonce', ['wrong-parent']), /FOREIGN_CONVERSATION/);
+  assert.throws(() => parseConversation([...messages, { role: 'user', text: 'requestId later' }], [q('1')], 'later', ['nonce']), /RESPONSE_NOT_READY/);
   const dir = await mkdtemp(join(tmpdir(), 'batch-completed-web-'));
   try {
     const journalPath = join(dir, 'web.json');
@@ -116,13 +120,13 @@ test('extension reuses one attachment, closes its own pages and detaches without
   assert.deepEqual(events, ['connect', 'own-page-close', 'own-page-close', 'detach']);
 });
 
-test('a completed conversation is read after DOM timeout, while a foreign response still fails', async () => {
+test('a completed conversation is read without waiting on DOM, while a foreign response still fails', async () => {
   const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
   const messages = [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
     { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
-  let waits = 0, reads = 0;
+  let reads = 0;
   const page = { url: () => 'https://chatgpt.com/c/owned-conversation',
-    waitForFunction: async () => { if (++waits % 2 === 0) { const error = new Error('timeout'); error.name = 'TimeoutError'; throw error; } },
+    waitForFunction: () => assert.fail('known conversation must not wait on message DOM'),
     evaluate: async () => { reads++; return messages; },
     locator: () => assert.fail('no draft or send control should be touched') };
   assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
