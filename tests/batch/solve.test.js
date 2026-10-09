@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { optionId, digest, questionKey } from '../../batch/answers.js';
 import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
-import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, solveTest } from '../../batch/solve.js';
+import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
 import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, webSolver } from '../../batch/web.js';
 import { closeExtensionTabs } from '../../batch/extension.js';
 import { chromium } from 'playwright';
@@ -263,6 +263,14 @@ test('packets split large distinct contexts instead of mixing or silently trunca
   assert.deepEqual(questionPackets(questions, context).map(b => b.length), [1, 1, 1]);
   const shared = questions.map(q => ({ ...q, contextId: '0' }));
   assert.equal(questionPackets(shared, context).length, 1);
+});
+
+test('matching context excerpts include terms from row labels and answer options', () => {
+  const question = q('1', { type: 'matching', text: 'Сопоставьте', options: [], rows: [
+    { text: 'Альбит', options: [{ text: 'Плагиоклаз' }] }
+  ] });
+  const text = 'irrelevant '.repeat(800) + ' Альбит относится к группе плагиоклазов. ' + 'irrelevant '.repeat(800);
+  assert.ok(selectContext(text, [question], 2402).includes('Альбит относится к группе плагиоклазов.'));
 });
 
 test('oversized questions are rejected both first and after a packet split for each provider', () => {

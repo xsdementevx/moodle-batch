@@ -9,7 +9,8 @@ const MODEL = 'jev-1.13.0';
 
 export function selectContext(text, questions, limit = 48000) {
   if (text.length <= limit) return text;
-  const terms = new Set(questions.flatMap(q => (q.text + ' ' + q.options.map(o => o.text).join(' ')).toLowerCase().match(/[\p{L}\p{N}]{5,}/gu) || []).map(t => t.slice(0, 6)));
+  const terms = new Set(questions.flatMap(q => (q.text + ' ' + [...q.options, ...q.rows, ...q.rows.flatMap(r => r.options)]
+    .map(o => o.text).join(' ')).toLowerCase().match(/[\p{L}\p{N}]{5,}/gu) || []).map(t => t.slice(0, 6)));
   const chunks = text.match(/[\s\S]{1,1200}/gu) || [];
   const ranked = chunks.map((text, index) => ({ text, index, score: [...terms].filter(t => text.toLowerCase().includes(t)).length }))
     .filter(c => c.score > 0).sort((a, b) => b.score - a.score).slice(0, Math.floor(limit / 1201)).sort((a, b) => a.index - b.index);
