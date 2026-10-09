@@ -116,3 +116,16 @@ https://www.nato.int/fr/news-and-events/articles/news/2003/08/11/nato-takes-on-a
 Английская версия таблицу не показала; архив state.gov недоступен.
 Не угадывать другой набор ради оценки. После входа проверить свежий review
 и native mapping multiple, прежде чем объявлять ключ Moodle ошибочным.
+
+Авторизация восстановлена: check-moodle-session.mjs подтвердил прежний аккаунт,
+batch:login успешно экспортировал активную сессию без новой отправки логина;
+refresh сервиса authRequired:false, анализ оценок запущен. Личная проверка
+check-installed-extension.mjs по-прежнему не нашла кнопку.
+Read-only чтение Yandex Default/Secure Preferences показало, что установленный
+Moodle Batch (ibhpamondohfmodknkfgjaklldhcmbih) загружается из СТАРОЙ папки
+D:\Users\Downloads\ai-question-hints-v2.6.2\.playwright-mcp\batch\extension.
+Старый проект не менять. Пользователю задан уточнённый async вопрос загрузить
+новую папку D:\Users\Downloads\moodle-batch\.playwright-mcp\batch\extension.
+После ответа повторить личную проверку без инъекции. Свежий read-only review
+подтвердил correct оставшихся ранее вопросов 291377; 291406 matching partial,
+multiple incorrect, раскрытых ответов нет. Новые попытки не открывались.
