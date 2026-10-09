@@ -243,6 +243,22 @@ export async function openParser() {
           const text = question.displayedRightAnswer.replace(/^(?:Правильный ответ|Правильные ответы|Верный ответ|The correct answer is|The correct answers are)\s*:\s*/iu, '');
           const hasPrefix = text !== question.displayedRightAnswer;
           if (hasPrefix && question.type === 'text' && normalize(text)) question.revealedAnswer = normalize(text);
+          if (hasPrefix && question.type === 'matching' && new Set(question.rows.map(r => r.id)).size === question.rows.length) {
+            // Moodle renders pairs in stem order; keep punctuation inside labels intact.
+            let remaining = text;
+            const answer = {};
+            for (const [index, row] of question.rows.entries()) {
+              const suffix = index === question.rows.length - 1 ? '' : ', ';
+              const matches = row.options.filter(o => {
+                const pair = `${row.text} → ${o.text}${suffix}`;
+                return suffix ? remaining.startsWith(pair) : remaining === pair;
+              });
+              if (matches.length !== 1) break;
+              answer[row.id] = matches[0].id;
+              remaining = remaining.slice(`${row.text} → ${matches[0].text}${suffix}`.length);
+            }
+            if (!remaining && Object.keys(answer).length === question.rows.length) question.revealedAnswer = answer;
+          }
           if (hasPrefix && ['choice', 'multiple'].includes(question.type)) {
             const exact = question.options.filter(o => o.text === text);
             if (exact.length === 1) question.revealedAnswer = [exact[0].id];
