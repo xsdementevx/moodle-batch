@@ -260,6 +260,17 @@ test('packets split large distinct contexts instead of mixing or silently trunca
   assert.equal(questionPackets(shared, context).length, 1);
 });
 
+test('oversized questions are rejected both first and after a packet split for each provider', () => {
+  const context = { text: '' };
+  const normal = q('1');
+  const oversized = q('2', { text: 'A'.repeat(10000) });
+  for (const provider of ['web', 'jev']) {
+    assert.throws(() => questionPackets([oversized], context, 5000, 40, provider), /QUESTION_PACKET_TOO_LARGE/);
+    assert.throws(() => questionPackets([normal, oversized], context, 5000, 40, provider), /QUESTION_PACKET_TOO_LARGE/);
+    assert.deepEqual(questionPackets([normal, q('3')], context, 5000, 1, provider).map(b => b.length), [1, 1]);
+  }
+});
+
 test('context discovery chooses materials preceding the exact test; text extraction caches source hash', async () => {
   const parser = await openParser();
   const dir = await mkdtemp(join(tmpdir(), 'batch-context-'));

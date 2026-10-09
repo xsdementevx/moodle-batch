@@ -124,13 +124,19 @@ export function packetContext(context, questions, limit) {
 export function questionPackets(questions, context, limit = 100000, maxQuestions = 40, provider = 'web') {
   const packets = [];
   let batch = [];
+  const packetSize = next => {
+    const scoped = packetContext(context, next, Math.floor(limit * 0.8));
+    return provider === 'jev' ? JSON.stringify(jevPacket(next, scoped.text).payload).length
+      : JSON.stringify(next.map(({ memory, ...q }) => ({ ...q, excludedAnswers: memory?.excludedAnswers }))).length + scoped.text.length;
+  };
   for (const q of questions) {
     const next = [...batch, q];
-    const scoped = packetContext(context, next, Math.floor(limit * 0.8));
-    const size = provider === 'jev' ? JSON.stringify(jevPacket(next, scoped.text).payload).length
-      : JSON.stringify(next.map(({ memory, ...q }) => ({ ...q, excludedAnswers: memory?.excludedAnswers }))).length + scoped.text.length;
+    const size = packetSize(next);
     if (!batch.length && size > limit) throw new Error('QUESTION_PACKET_TOO_LARGE');
-    if (batch.length && (next.length > maxQuestions || size > limit)) { packets.push(batch); batch = []; }
+    if (batch.length && (next.length > maxQuestions || size > limit)) {
+      if (packetSize([q]) > limit) throw new Error('QUESTION_PACKET_TOO_LARGE');
+      packets.push(batch); batch = [];
+    }
     batch.push(q);
   }
   if (batch.length) packets.push(batch);

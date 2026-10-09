@@ -18,6 +18,7 @@ const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на ко
   LOGIN_REQUIRED: 'Сессия Moodle истекла. Войдите в Moodle, обновите cookies.json и нажмите «Обновить анализ». Показаны сохранённые оценки.',
   PAIRING_REQUIRED: 'Обновите расширение из папки, подготовленной сервисом.', UNKNOWN_MODEL_OUTCOME: 'Нужно проверить сохранённый запрос модели.',
   UNRESOLVED_SUBMISSION: 'Есть вопросы без надёжного ответа. Отправка остановлена.', MOODLE_PREFLIGHT_REQUIRED: 'Moodle требует подтверждение перед началом.',
+  QUESTION_PACKET_TOO_LARGE: 'Один вопрос превышает размер запроса модели. Решение остановлено; попытка не отправлена.',
   SERVICE_RESTARTED: 'Сервис был перезапущен. Проверьте последнюю попытку перед новым запуском.', JOB_ALREADY_RUNNING: 'Другой запуск уже выполняется.' };
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
 function buttons() {
