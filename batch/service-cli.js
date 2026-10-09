@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openMoodle } from './moodle.js';
+import { openConnection } from './connection.js';
 import { openAnswers } from './answers.js';
 import { webSolver } from './web.js';
 import { openService, serviceServer } from './service.js';
@@ -38,7 +38,7 @@ async function main() {
       start: input => service.start(input), stop: id => service.stop(id), refresh: () => service.refresh(),
     }, token, port);
     await new Promise((done, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', done); });
-    moodle = await openMoodle({ authFile: resolve(values.auth), origin: values.origin });
+    moodle = await openConnection({ authFile: resolve(values.auth), origin: values.origin, root });
     store = openAnswers(join(root, 'answers.sqlite'));
     web = webSolver({ extension: true, profileDir: resolve(values['gpt-profile']), executablePath: values['gpt-browser'] });
     service = await openService({ moodle, store, web, root });
@@ -47,6 +47,7 @@ async function main() {
     await writeFile(join(extensionDir, 'config.js'), `globalThis.batchConfig = ${JSON.stringify({ endpoint: `http://127.0.0.1:${port}`, token, origin: moodle.origin, userScope: moodle.userScope })};\n`, { mode: 0o600 });
     console.log(`Moodle Batch готов. Рабочее расширение: ${extensionDir}`);
     console.log('Загрузите эту папку в браузере один раз. Сервис должен оставаться запущенным.');
+    if (moodle.authRequired) console.log('Сессия Moodle истекла. Обновите cookies.json и нажмите «Обновить анализ» в расширении.');
     await new Promise(done => { process.once('SIGINT', done); process.once('SIGTERM', done); });
   } finally {
     if (server?.listening) await new Promise(done => server.close(done));

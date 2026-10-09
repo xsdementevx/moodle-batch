@@ -55,17 +55,17 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     if (scanTask) return scanTask;
     const previous = overview;
     scanError = null;
-    scanTask = scan(moodle, store, { onProgress: next => {
+    scanTask = Promise.resolve().then(() => moodle.connect?.()).then(() => scan(moodle, store, { onProgress: next => {
       overview = { ...next, courses: next.courses.map(course => course.status === 'loading'
         ? previous?.courses.find(old => old.courseId === course.courseId) || course : course) };
       for (const result of recentGrades.values()) updateGrade(result);
-    } }).then(async result => {
+    } })).then(async result => {
       overview = result;
       for (const grade of recentGrades.values()) updateGrade(grade);
       recentGrades.clear();
       await saveReport();
     })
-      .catch(error => { scanError = safeCode(error); }).finally(() => { scanTask = null; });
+      .catch(error => { scanError = safeCode(error); if (scanError === 'LOGIN_REQUIRED') moodle.authRequired = true; }).finally(() => { scanTask = null; });
     return scanTask;
   };
   const run = async job => {
@@ -101,6 +101,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
         for (const { quizId, error } of outcomes) if (error) {
           const quiz = job.results.find(q => q.quizId === quizId);
           quiz.error = safeCode(error); quiz.status = 'error';
+          if (quiz.error === 'LOGIN_REQUIRED') moodle.authRequired = true;
         }
         await save();
       }
@@ -111,7 +112,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     finally { active = null; }
   };
   return {
-    state() { return { origin: moodle.origin, userScope: moodle.userScope, running: Boolean(scanTask),
+    state() { return { origin: moodle.origin, userScope: moodle.userScope, authRequired: Boolean(moodle.authRequired), running: Boolean(scanTask),
       error: scanError, overview, jobs }; },
     refresh,
     async start(input) {
@@ -126,6 +127,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
         await writes;
         return old;
       }
+      if (moodle.authRequired) throw new Error('LOGIN_REQUIRED');
       if (active) throw new Error('JOB_ALREADY_RUNNING');
       const job = { ...input, status: 'queued', stopRequested: false, createdAt: new Date().toISOString(), results: [] };
       jobs.push(job); active = job;

@@ -15,12 +15,13 @@ const api = async (route, body) => {
 const busy = () => current?.jobs.find(job => ['queued', 'running'].includes(job.status));
 const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
 const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на компьютере.', USER_SCOPE_MISMATCH: 'Аккаунт Moodle отличается от аккаунта сервиса.',
+  LOGIN_REQUIRED: 'Сессия Moodle истекла. Войдите в Moodle, обновите cookies.json и нажмите «Обновить анализ». Показаны сохранённые оценки.',
   PAIRING_REQUIRED: 'Обновите расширение из папки, подготовленной сервисом.', UNKNOWN_MODEL_OUTCOME: 'Нужно проверить сохранённый запрос модели.',
   UNRESOLVED_SUBMISSION: 'Есть вопросы без надёжного ответа. Отправка остановлена.', MOODLE_PREFLIGHT_REQUIRED: 'Moodle требует подтверждение перед началом.',
   SERVICE_RESTARTED: 'Сервис был перезапущен. Проверьте последнюю попытку перед новым запуском.', JOB_ALREADY_RUNNING: 'Другой запуск уже выполняется.' };
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
 function buttons() {
-  $('run').disabled = submitting || Boolean(busy()) || !selected.size;
+  $('run').disabled = submitting || Boolean(busy()) || current?.authRequired || !selected.size;
   $('run').textContent = pendingIntent ? `Проверить сохранённый запуск (${pendingIntent.quizIds.length})` : `Решить и отправить выбранные (${selected.size})`;
   for (const id of ['select', 'clear', 'rounds']) $(id).disabled = submitting || Boolean(pendingIntent);
   for (const check of $('courses').querySelectorAll('input[type=checkbox]')) check.disabled = submitting || Boolean(pendingIntent);
@@ -92,6 +93,7 @@ async function load() {
       if (current.overview.phase === 'complete') await chrome.storage.local.set({ [cacheKey]: current.overview });
     }
     showJobs(); buttons();
+    if (current.authRequired) $('message').textContent = errors.LOGIN_REQUIRED;
     if (current.error) $('message').textContent = `Анализ остановлен: ${errors[current.error] || current.error}. Нажмите «Обновить анализ».`;
     const intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
     if (intent?.userScope === userScope && current.jobs.some(job => job.requestId === intent.requestId)) {

@@ -426,8 +426,8 @@ export async function openMoodle({ authFile, origin }) {
       }
       throw new Error('REDIRECT_LIMIT');
     },
-    async close() {
-      try { await saveSession(); }
+    async close({ save = true } = {}) {
+      try { if (save) await saveSession(); }
       finally { await api.dispose(); await parser.close(); }
     },
   };
