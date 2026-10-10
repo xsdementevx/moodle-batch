@@ -7,6 +7,20 @@ const source = 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20';
 const html = (content, kind = 'review') => `<!doctype html><body id="page-mod-quiz-${kind}" data-course-id="10" data-quiz-id="20" data-user-scope="u1">${content}</body>`;
 const choice = (state = 'incorrect') => `<div class="que multichoice ${state}" id="question-100-1"><div class="formulation"><div class="qtext">Choose<br>a sample.</div><div class="answer"><div class="r0"><input type="radio" name="q100:1_answer" id="a" value="0" checked disabled aria-labelledby="label-a"><div id="label-a"><span class="answernumber">a.</span>Alpha</div></div><div class="r1"><input type="radio" name="q100:1_answer" id="b" value="1" disabled><label for="b"><span class="answernumber">b.</span>Beta</label></div></div><input name="q100:1_:sequencecheck" value="2"></div><input type="checkbox" name="q100:1_:flagged" checked><div class="rightanswer">Правильный ответ: Beta</div></div>`;
 
+test('native bank identity is read only from flag data matching the question usage and slot', async () => {
+  const parser = await openParser();
+  try {
+    const markup = data => html(choice().replace('<div class="formulation">', `<input class="questionflagpostdata" value="${data}"><div class="formulation">`));
+    assert.equal((await parser.parse(markup('qubaid=100&amp;slot=1&amp;qid=2148469'), source)).questions[0].bankQuestionId, '2148469');
+    const media = (await parser.parse(markup('qubaid=100&amp;slot=1&amp;qid=2148469').replace('Choose<br>a sample.', '<img src="/native-diagram.png">Choose.'), source)).questions[0];
+    assert.equal(media.type, 'choice');
+    assert.equal(media.unsupportedReason, 'MEDIA_REQUIRES_EXTRACTION');
+    for (const data of ['qubaid=999&amp;slot=1&amp;qid=2148469', 'qubaid=100&amp;slot=2&amp;qid=2148469', 'qubaid=100&amp;slot=1&amp;qid=2148469&amp;qid=2075022', 'qubaid=100&amp;slot=1&amp;qid=bad']) {
+      assert.equal((await parser.parse(markup(data), source)).questions[0].bankQuestionId, undefined);
+    }
+  } finally { await parser.close(); }
+});
+
 test('inline blanks exclude hidden UI labels and keep the same wording across question positions', async () => {
   const parser = await openParser();
   try {

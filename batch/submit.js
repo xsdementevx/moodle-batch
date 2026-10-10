@@ -54,9 +54,10 @@ export function buildSubmission(test, questions) {
   };
   for (const q of questions) {
     const original = test.questions.find(question => question.slot === q.slot);
-    if (!original || questionKey(original) !== questionKey(q) || q.attemptId !== test.attemptId || q.quizId !== test.quizId
+    if (!original || questionKey(original) !== questionKey(q) || original.bankQuestionId !== q.bankQuestionId
+        || q.attemptId !== test.attemptId || q.quizId !== test.quizId
         || q.userScope !== test.userScope || q.courseId !== test.courseId || q.origin !== test.origin) throw new Error('SUBMISSION_SCOPE_MISMATCH');
-    if (q.behaviour !== 'deferredfeedback') throw new Error('UNSUPPORTED_QUESTION_BEHAVIOUR');
+    if (!['deferredfeedback', 'adaptivenopenalty'].includes(q.behaviour)) throw new Error('UNSUPPORTED_QUESTION_BEHAVIOUR');
     if (['conflict', 'unsupported'].includes(q.memory?.status) || !['confirmed', 'candidate'].includes(q.decision?.status)) {
       const error = new Error('UNRESOLVED_SUBMISSION');
       error.unresolvedQuestions = questions.filter(item => ['conflict', 'unsupported'].includes(item.memory?.status)
@@ -65,6 +66,8 @@ export function buildSubmission(test, questions) {
         ...(Number.isFinite(item.decision?.confidence) ? { confidence: item.decision.confidence } : {}) }));
       throw error;
     }
+    if (q.unsupportedReason && (q.memory?.status !== 'known' || q.decision.status !== 'confirmed'
+        || q.decision.provider !== 'memory')) throw new Error('UNRESOLVED_SUBMISSION');
     if (isExcludedAnswer(q, q.decision.answer)) throw new Error('EXCLUDED_SUBMISSION_ANSWER');
     const sequence = /^q(\d+):(\d+)_:sequencecheck$/u.exec(q.sequenceFieldName || '');
     if (!sequence || sequence[2] !== q.slot || !/^\d+$/u.test(q.sequenceValue || '')) throw new Error('INVALID_SEQUENCE_CHECK');
@@ -140,7 +143,8 @@ export async function submitTest(moodle, test, questions, journalPath, { seconds
   const fresh = await moodle.collect(test.sourceUrl);
   const current = fresh.questions.map(q => {
     const solved = questions.find(old => old.slot === q.slot);
-    if (!solved || questionKey(solved) !== questionKey(q) || solved.sequenceValue !== q.sequenceValue) throw new Error('ATTEMPT_CHANGED');
+    if (!solved || questionKey(solved) !== questionKey(q) || solved.bankQuestionId !== q.bankQuestionId
+        || solved.sequenceValue !== q.sequenceValue) throw new Error('ATTEMPT_CHANGED');
     return { ...q, decision: solved.decision, memory: solved.memory };
   });
   const plan = buildSubmission(fresh, current);

@@ -171,17 +171,23 @@ export async function openParser() {
             selectedValue: select.value,
             feedback: ['correct', 'incorrect'].find(state => select.closest('.control')?.classList.contains(state)) || 'unconfirmed',
           }));
-          if (unsupportedReason) type = 'unsupported';
           const control = q.querySelector('input[name$="_:sequencecheck"]');
+          const identity = /^question-(\d+)-(\d+)$/u.exec(q.id);
+          const flag = new URLSearchParams(q.querySelector('.questionflagpostdata')?.value || '');
+          const bankQuestionId = identity && flag.get('qubaid') === identity[1] && flag.get('slot') === identity[2]
+            && ['qubaid', 'slot', 'qid'].every(key => flag.getAll(key).length === 1)
+            && /^[1-9]\d*$/u.test(flag.get('qid') || '') ? flag.get('qid') : undefined;
+          if (unsupportedReason && !(unsupportedReason === 'MEDIA_REQUIRES_EXTRACTION' && bankQuestionId)) type = 'unsupported';
           return {
             slot: q.dataset.slot || /-(\d+)$/u.exec(q.id)?.[1] || '', page: pageNumber,
+            bankQuestionId,
             type, unsupportedReason, text: cleanText(stem, type === 'text'), options, rows,
             textFormat: type === 'text' ? (q.classList.contains('numerical') ? 'numerical' : q.classList.contains('shortanswer') ? 'shortanswer' : null) : null,
             textAnswer: texts.length === 1 ? norm(texts[0].value) : null,
             textFieldSize: texts.length === 1 && Number.isInteger(texts[0].size) ? texts[0].size : null,
             textFieldName: texts.length === 1 ? texts[0].name : null,
             sequenceFieldName: control?.name || null, sequenceValue: control?.value || null,
-            behaviour: q.classList.contains('deferredfeedback') ? 'deferredfeedback' : null,
+            behaviour: ['deferredfeedback', 'adaptivenopenalty'].find(mode => q.classList.contains(mode)) || null,
             feedback: ['correct', 'incorrect', 'partiallycorrect'].find(s => q.classList.contains(s)) || 'unconfirmed',
             displayedRightAnswer: cleanText(q.querySelector('.rightanswer')) || null,
           };

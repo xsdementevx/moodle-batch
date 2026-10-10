@@ -9,8 +9,9 @@ export const optionId = text => digest(['option-v1', normalize(text)]);
 
 export function questionKey(question) {
   const { origin, userScope, courseId, contextHash = '', type, text, options = [], rows = [] } = question;
-  if (!origin || new URL(origin).origin !== origin || !userScope || !courseId || !normalize(text)) throw new Error('INVALID_QUESTION_SCOPE');
-  if (!['choice', 'multiple', 'matching', 'text'].includes(type) || question.unsupportedReason) throw new Error('UNSUPPORTED_QUESTION');
+  if (!origin || new URL(origin).origin !== origin || !userScope || !courseId || (!normalize(text) && type !== 'matching')) throw new Error('INVALID_QUESTION_SCOPE');
+  const media = question.unsupportedReason === 'MEDIA_REQUIRES_EXTRACTION' && /^[1-9]\d*$/u.test(question.bankQuestionId || '');
+  if (!['choice', 'multiple', 'matching', 'text'].includes(type) || (question.unsupportedReason && !media)) throw new Error('UNSUPPORTED_QUESTION');
   const texts = options.map(option => normalize(option.text));
   if (['choice', 'multiple'].includes(type) && (texts.length < 2 || texts.some(t => !t)
       || (type === 'multiple' && new Set(texts).size !== texts.length)
@@ -21,7 +22,7 @@ export function questionKey(question) {
       || canonicalRows.some(([label, values]) => !label || !values.length || values.some(v => !v) || new Set(values).size !== values.length)
       || rows.some(row => row.id !== digest(['row-v1', normalize(row.text), row.options.map(o => normalize(o.text)).sort()])
         || row.options.some(option => option.id !== optionId(option.text))))) throw new Error('AMBIGUOUS_ROWS');
-  return digest(['question-v2', origin, userScope, courseId, contextHash, type, normalize(text), texts.sort(), canonicalRows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))]);
+  return digest(['question-v2', origin, userScope, courseId, contextHash, type, normalize(text), texts.sort(), canonicalRows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), ...(media ? [question.bankQuestionId] : [])]);
 }
 
 export function answerSignature(question, answer) {
@@ -68,7 +69,7 @@ export function openAnswers(path) {
     ON CONFLICT(question_key, quiz_id, attempt_id, slot, evidence) DO UPDATE SET
     answer=excluded.answer, outcome=excluded.outcome, snapshot=excluded.snapshot, source_url=excluded.source_url
     WHERE excluded.outcome != 'unconfirmed' OR observations.outcome = 'unconfirmed'`);
-  const read = db.prepare('SELECT answer, outcome, evidence FROM observations WHERE question_key = ?');
+  const read = db.prepare('SELECT quiz_id, answer, outcome, evidence, snapshot FROM observations WHERE question_key = ?');
   return {
     importReview(questions) {
       let imported = 0;
@@ -114,7 +115,12 @@ export function openAnswers(path) {
     lookup(question) {
       let key;
       try { key = questionKey(question); } catch { return { status: 'unsupported', answer: null, excludedAnswers: [], observations: 0 }; }
-      const all = read.all(key);
+      let all = read.all(key);
+      if (/^[1-9]\d*$/u.test(question.bankQuestionId || '')) {
+        const identified = all.map(record => ({ ...record, bankQuestionId: JSON.parse(record.snapshot).bankQuestionId })).filter(r => r.bankQuestionId);
+        // Identical wording can belong to different Moodle keys. Never share their feedback.
+        if (identified.length) all = identified.filter(r => r.bankQuestionId === question.bankQuestionId);
+      }
       const records = all.filter(r => !r.evidence.startsWith('row:') && !r.evidence.startsWith('option:'));
       let positive = [...new Set(records.filter(r => r.outcome === 'correct').map(r => r.answer))];
       const negative = [...new Set(records.filter(r => ['incorrect', 'partiallycorrect'].includes(r.outcome)).map(r => r.answer))];
@@ -133,7 +139,13 @@ export function openAnswers(path) {
           return Object.entries(multipleOptions).every(([id, included]) => answer.includes(id) === included);
         });
       }
-      conflict ||= (question.type !== 'multiple' && positive.length > 1) || positive.some(answer => negative.includes(answer));
+      conflict ||= positive.some(answer => negative.includes(answer));
+      if (!conflict && question.type === 'text' && positive.length > 1
+          && new Set(positive.map(signature => JSON.parse(signature).toLowerCase())).size === 1) {
+        // Keep an exact accepted spelling; do not infer that Moodle ignores case.
+        positive = [positive.find(answer => records.some(r => r.quiz_id === question.quizId && r.outcome === 'correct' && r.answer === answer)) || positive[0]];
+      }
+      conflict ||= question.type !== 'multiple' && positive.length > 1;
       if (!conflict && question.type === 'multiple' && positive.length > 1) {
         // Reuse an exact accepted set compatible with all explicit marks, never a new combination.
         positive.sort((a, b) => JSON.parse(a).length - JSON.parse(b).length || a.localeCompare(b));
@@ -159,7 +171,7 @@ export function openAnswers(path) {
         else if (!positive.includes(signature)) positive.push(signature);
       }
       return {
-        status: conflict ? 'conflict' : positive.length === 1 ? 'known' : 'unresolved',
+        status: conflict ? 'conflict' : positive.length === 1 ? 'known' : question.unsupportedReason ? 'unsupported' : 'unresolved',
         answer: !conflict && positive.length === 1 ? decodeAnswer(question, positive[0]) : null,
         excludedAnswers: conflict ? [] : negative.map(signature => decodeAnswer(question, signature)),
         observations: all.length,

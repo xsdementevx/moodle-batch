@@ -140,6 +140,30 @@ test('one final request maps stable answers to native fields and rejects unresol
   assert.throws(() => buildSubmission(bad, bad.questions), /SUBMISSION_SCOPE/);
 });
 
+test('media submissions require confirmed memory and unchanged native bank identity', () => {
+  const attempt = fixture();
+  const q = attempt.questions[0];
+  q.unsupportedReason = 'MEDIA_REQUIRES_EXTRACTION'; q.bankQuestionId = '101';
+  q.memory = { status: 'known', answer: q.decision.answer, excludedAnswers: [] };
+  assert.throws(() => buildSubmission(attempt, attempt.questions), /UNRESOLVED_SUBMISSION/);
+  q.decision = { ...q.decision, status: 'confirmed', provider: 'memory' };
+  assert.equal(buildSubmission(attempt, attempt.questions).fields['q100:1_answer'], '1');
+  const foreign = structuredClone(attempt.questions); foreign[0].bankQuestionId = '102';
+  assert.throws(() => buildSubmission(attempt, foreign), /SUBMISSION_SCOPE_MISMATCH/);
+});
+
+test('adaptive without penalties finishes with responses and no per-question check actions', () => {
+  const attempt = fixture();
+  for (const q of attempt.questions) q.behaviour = 'adaptivenopenalty';
+  const plan = buildSubmission(attempt, attempt.questions);
+  assert.equal(plan.fields.finishattempt, '1');
+  assert.equal(plan.fields['q100:1_answer'], '1');
+  assert.equal(plan.fields['q100:3_sub0'], '2');
+  assert.ok(!Object.keys(plan.fields).some(name => name.endsWith('-submit')));
+  attempt.questions[0].behaviour = 'interactive';
+  assert.throws(() => buildSubmission(attempt, attempt.questions), /UNSUPPORTED_QUESTION_BEHAVIOUR/);
+});
+
 test('submit refreshes native controls, sends once, reuses completed response and blocks unknown outcome', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-submit-'));
   try {
@@ -160,6 +184,11 @@ test('submit refreshes native controls, sends once, reuses completed response an
     const changed = structuredClone(attempt); changed.questions[0].sequenceValue = '3';
     await assert.rejects(submitTest({ ...moodle, collect: async () => changed }, attempt, attempt.questions, join(dir, 'changed.json')), /ATTEMPT_CHANGED/);
     assert.equal(posts, 2);
+    const identified = structuredClone(attempt); identified.questions[0].bankQuestionId = '101';
+    const swapped = structuredClone(identified); swapped.questions[0].bankQuestionId = '102';
+    await assert.rejects(submitTest({ ...moodle, collect: async () => swapped }, identified, identified.questions,
+      join(dir, 'changed-native.json')), /ATTEMPT_CHANGED/);
+    assert.equal(posts, 2, 'a changed native question ID must block even with identical text and sequence');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -174,6 +203,8 @@ test('offline parser retains response form and deferred feedback for request pre
     const collected = await collectTest(async () => parsed, attempt.sourceUrl);
     const questions = collected.questions.map(q => ({ ...q, memory: { status: 'unresolved', excludedAnswers: [] }, decision: { status: 'candidate', answer: 'Term' } }));
     assert.equal(buildSubmission(collected, questions).fields['q100:1_answer'], 'Term');
+    const adaptive = await parser.parse(html.replace('shortanswer deferredfeedback', 'shortanswer adaptivenopenalty'), attempt.sourceUrl);
+    assert.equal(adaptive.questions[0].behaviour, 'adaptivenopenalty');
     const viewHtml = '<body id="page-mod-quiz-view" data-course-id="10" data-quiz-id="20" data-user-scope="u1"><form method="post" action="/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"></form></body>';
     const view = await parser.parse(viewHtml, `${attempt.origin}/mod/quiz/view.php?id=20`);
     assert.equal(buildStart(view).fields.sesskey, 'synthetic');

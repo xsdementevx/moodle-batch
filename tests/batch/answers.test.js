@@ -209,3 +209,77 @@ test('matching answers remain complete mappings and text answers retain their co
     assert.equal(store.lookup(text).answer, 'Exact term');
   } finally { store.close(); }
 });
+
+test('accepted text case variants preserve exact per-quiz spelling and case-sensitive exclusions', () => {
+  const store = openAnswers(':memory:');
+  const lower = question({ type: 'text', options: [], answer: 'социальный статус' });
+  const upper = { ...lower, quizId: '21', attemptId: '31', sourceUrl: 'https://moodle.example/mod/quiz/review.php?attempt=31&cmid=21', answer: 'Социальный статус' };
+  try {
+    store.importReview([lower, upper]);
+    assert.equal(store.lookup(lower).status, 'known');
+    assert.equal(store.lookup(lower).answer, lower.answer);
+    assert.equal(store.lookup(upper).answer, upper.answer);
+    const wrong = { ...lower, attemptId: '32', sourceUrl: lower.sourceUrl.replace('attempt=30', 'attempt=32'), answer: 'СОЦИАЛЬНЫЙ СТАТУС', feedback: 'incorrect' };
+    store.importReview([wrong]);
+    assert.equal(store.lookup(lower).status, 'known');
+    assert.deepEqual(store.lookup(lower).excludedAnswers, [wrong.answer]);
+    assert.equal(isExcludedAnswer({ ...lower, memory: store.lookup(lower) }, lower.answer), false);
+    store.importReview([{ ...wrong, attemptId: '33', sourceUrl: wrong.sourceUrl.replace('attempt=32', 'attempt=33'), answer: upper.answer }]);
+    assert.equal(store.lookup(lower).status, 'conflict', 'an exact spelling accepted and rejected remains blocked');
+    const other = { ...lower, text: 'Different term.', answer: 'вариант один' };
+    store.importReview([other, { ...other, attemptId: '31', sourceUrl: other.sourceUrl.replace('attempt=30', 'attempt=31'), answer: 'вариант два' }]);
+    assert.equal(store.lookup(other).status, 'conflict', 'different words are not case variants');
+  } finally { store.close(); }
+});
+
+test('identical wording with distinct native bank IDs keeps feedback separate and reuses the same bank ID', () => {
+  const store = openAnswers(':memory:');
+  const accepted = question({ type: 'text', options: [], answer: 'существенным', bankQuestionId: '101' });
+  const rejected = { ...accepted, slot: '2', bankQuestionId: '102', feedback: 'incorrect' };
+  try {
+    store.importReview([accepted, rejected]);
+    assert.equal(questionKey(accepted), questionKey(rejected), 'semantic keys and existing journal identity remain stable');
+    assert.equal(store.lookup(accepted).status, 'known');
+    assert.equal(store.lookup(accepted).answer, accepted.answer);
+    assert.equal(store.lookup(rejected).status, 'unresolved');
+    assert.deepEqual(store.lookup(rejected).excludedAnswers, [rejected.answer]);
+    assert.equal(store.lookup({ ...accepted, bankQuestionId: '103' }).status, 'unresolved');
+    assert.equal(store.lookup({ ...accepted, quizId: '21' }).answer, accepted.answer);
+    assert.equal(store.lookup({ ...accepted, bankQuestionId: undefined }).status, 'conflict', 'unknown identity cannot select one contradictory key');
+    store.importReview([{ ...accepted, attemptId: '31', sourceUrl: accepted.sourceUrl.replace('attempt=30', 'attempt=31'), feedback: 'incorrect' }]);
+    assert.equal(store.lookup(accepted).status, 'conflict', 'contradictory marks for the same native ID still block');
+  } finally { store.close(); }
+});
+
+test('matching questions without a stem remain identifiable by complete row labels and options', () => {
+  const store = openAnswers(':memory:');
+  const rows = ['jury', 'court'].map(text => ({ text, id: digest(['row-v1', text, options.map(o => o.text).sort()]), options }));
+  const answer = Object.fromEntries(rows.map((r, i) => [r.id, options[i].id]));
+  const q = question({ type: 'matching', text: '', options: [], rows, answer });
+  try {
+    store.importReview([q]);
+    assert.equal(store.lookup(q).status, 'known');
+    assert.deepEqual(store.lookup({ ...q, rows: [...rows].reverse() }).answer, answer);
+    assert.equal(store.lookup({ ...q, rows: [{ ...rows[0], text: '' }] }).status, 'unsupported');
+    assert.equal(store.lookup({ ...q, type: 'text' }).status, 'unsupported');
+    assert.equal(store.lookup({ ...q, type: 'choice', options }).status, 'unsupported');
+  } finally { store.close(); }
+});
+
+test('media questions reuse native confirmation only for the same bank ID and otherwise remain unsupported', () => {
+  const store = openAnswers(':memory:');
+  const q = question({ unsupportedReason: 'MEDIA_REQUIRES_EXTRACTION', bankQuestionId: '101' });
+  try {
+    assert.equal(store.lookup(q).status, 'unsupported');
+    store.importReview([q]);
+    assert.equal(store.lookup(q).status, 'known');
+    assert.deepEqual(store.lookup({ ...q, quizId: '21' }).answer, q.answer);
+    assert.equal(store.lookup({ ...q, bankQuestionId: '102' }).status, 'unsupported');
+    assert.equal(store.lookup({ ...q, bankQuestionId: undefined }).status, 'unsupported');
+    assert.equal(store.lookup({ ...q, unsupportedReason: 'UNSUPPORTED_CONTROLS' }).status, 'unsupported');
+    const wrong = { ...q, bankQuestionId: '102', feedback: 'incorrect' };
+    store.importReview([wrong]);
+    assert.equal(store.lookup(wrong).status, 'unsupported');
+    assert.deepEqual(store.lookup(wrong).excludedAnswers, [q.answer]);
+  } finally { store.close(); }
+});
