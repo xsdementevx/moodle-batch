@@ -120,24 +120,32 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
   for (const quizId of blocked) await failed(quizId, new Error('UNKNOWN_MODEL_OUTCOME'));
   const eligible = prepared.filter(p => !blocked.has(p.test.quizId));
   if (!eligible.length) return results;
-  const documents = Object.fromEntries(eligible.map(p => [p.test.quizId, p.context]));
-  const questions = eligible.flatMap(p => p.questions.map(q => ({ ...q, nativeSlot: q.slot,
-    slot: `${q.quizId}:${q.attemptId}:${q.slot}`, contextId: p.test.quizId })));
-  let solved;
-  try {
-    if (options.stopped?.()) throw new Error('STOPPED');
-    await options.progress?.('solving', { tests: eligible.length, total: questions.length });
-    solved = await (options.solve || solveTest)(questions, { documents },
-      { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress });
-  } catch (error) {
-    console.error('Moodle Batch solver:', error.name, String(error.message).split('\n')[0].slice(0, 180));
-    for (const p of eligible) await failed(p.test.quizId, error);
-    return results;
-  }
-  // Open and solve the whole packet before waiting; finish shorter/older attempts first.
   const byReadyTime = p => p.test.attemptTiming.startedAt + (options.secondsPerQuestion || 0) * p.questions.length * 1000;
   if (options.secondsPerQuestion) eligible.sort((a, b) => byReadyTime(a) - byReadyTime(b));
-  for (const p of eligible) {
+  const known = eligible.filter(p => p.questions.every(q => q.memory.status === 'known'));
+  const unresolved = eligible.filter(p => !known.includes(p));
+  const documents = Object.fromEntries(unresolved.map(p => [p.test.quizId, p.context]));
+  const questions = unresolved.flatMap(p => p.questions.map(q => ({ ...q, nativeSlot: q.slot,
+    slot: `${q.quizId}:${q.attemptId}:${q.slot}`, contextId: p.test.quizId })));
+  // Model work and independent memory-only submissions overlap; every native POST stays serial.
+  const pendingSolve = (async () => { try {
+    if (!questions.length) return { solved: [] };
+    if (options.stopped?.()) throw new Error('STOPPED');
+    await options.progress?.('solving', { tests: unresolved.length, total: questions.length });
+    return { solved: await (options.solve || solveTest)(questions, { documents },
+      { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress }) };
+  } catch (error) { return { error }; } })();
+  for (const p of known) {
+    try { await finish(p, await solveTest(p.questions, p.context, { stopped: options.stopped })); }
+    catch (error) { await failed(p.test.quizId, error); }
+  }
+  const { solved, error } = await pendingSolve;
+  if (error) {
+    console.error('Moodle Batch solver:', error.name, String(error.message).split('\n')[0].slice(0, 180));
+    for (const p of unresolved) await failed(p.test.quizId, error);
+    return results;
+  }
+  for (const p of unresolved) {
     const quizId = p.test.quizId;
     const native = solved.filter(q => q.quizId === quizId).map(({ nativeSlot, contextId, ...q }) => ({ ...q, slot: nativeSlot }));
     await finish(p, native);

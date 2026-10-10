@@ -111,7 +111,7 @@ test('service persists minimum time and protects the original setting across req
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('batch opens all known attempts before waiting and submits each at its own minimum', async () => {
+test('batch opens all known attempts before waiting and isolates ready memory from a pending or failed model', { timeout: 5000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-timed-packet-'));
   let clock = 1_000_000;
   const read = [], submitted = [];
@@ -143,6 +143,23 @@ test('batch opens all known attempts before waiting and submits each at its own 
     assert.deepEqual(submitted, [{ quiz: '21', at: 1_010_000 }, { quiz: '20', at: 1_020_000 }]);
     assert.ok(results.every(q => q.result.percent === 100));
     assert.deepEqual(results.map(q => q.result.timing.elapsedSeconds), [10, 20]);
+    clock = 1_000_000; let modelStarted = false;
+    let release; const gate = new Promise(done => { release = done; });
+    try {
+      const mixed = await runQuizzes({ ...moodle, postSubmission: async plan => {
+        assert.equal(plan.fields.cmid, '21', 'unknown model answer must never be submitted');
+        assert.equal(modelStarted, true, 'model work starts before the known test finishes waiting');
+        assert.equal(clock, 1_010_000);
+        release();
+        return { reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=${plan.fields.attempt}&cmid=${plan.fields.cmid}` };
+      } }, { ...store, lookup: q => q.quizId === '21' ? store.lookup(q) : { status: 'unresolved', excludedAnswers: [] } }, ['20', '21'], {
+        root: join(root, 'mixed'), secondsPerQuestion: 10, now: () => clock,
+        contextLoader: async () => ({ status: 'missing', text: '' }), sleep: async ms => { clock += ms; },
+        solve: async questions => { assert.ok(questions.every(q => q.quizId === '20')); modelStarted = true; await gate; throw new Error('MODEL_FAILED'); },
+      });
+      assert.equal(mixed.find(r => r.quizId === '21').result.percent, 100);
+      assert.equal(mixed.find(r => r.quizId === '20').error.message, 'MODEL_FAILED');
+    } finally { release(); }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -278,7 +295,7 @@ test('installed extension recovers a lost start reply after reopening without ch
   const root = await mkdtemp(join(tmpdir(), 'batch-extension-'));
   let context, service, server, calls = 0;
   try {
-    service = await openService({ ...deps(root), runner: async () => { calls++; return { percent: 100, grade: '10 из 10 (100%)', correct: 1, total: 1,
+    service = await openService({ ...deps(root), runner: async () => { calls++; return { percent: 100, gradePercent: 90, grade: '10 из 10 (100%)', correct: 1, total: 1,
       sources: [{ slot: '1', provider: 'memory', cached: true, feedback: 'correct' }], reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } });
     server = serviceServer(service, 'synthetic-token', 49816);
     let lostReply = false, dropReplies = true;
@@ -335,6 +352,8 @@ test('installed extension recovers a lost start reply after reopening without ch
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Moodle Batch — отчёт запуска/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Тест 20/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Минимальное время на вопрос: 12 сек\./);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Итоговая оценка в журнале Moodle: 90%/);
+    assert.equal(await reopened.getByText('В журнале Moodle: 90%', { exact: true }).isVisible(), true);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
     await reopened.getByText('Проверка каждого вопроса Moodle', { exact: true }).click();
     assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);

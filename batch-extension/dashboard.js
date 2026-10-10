@@ -115,6 +115,7 @@ function reportFor(job) {
     for (const question of result.unresolvedQuestions || []) lines.push(`  ${reviewDetail(question)}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
+      if (Number.isFinite(attempt.gradePercent)) lines.push(`  Итоговая оценка в журнале Moodle: ${attempt.gradePercent}%`);
       if (attempt.timing) lines.push(`  Время до отправки: ${duration(attempt.timing.elapsedSeconds)}; минимум: ${duration(attempt.timing.minimumSeconds)}; начало отсчёта: ${time(new Date(attempt.timing.startedAt).toISOString())}${attempt.timing.source === 'first_seen' ? ' (первое обнаружение)' : ''}`);
       for (const source of attempt.sources || []) {
         lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${feedbackLabel(source.feedback)}`);
@@ -160,6 +161,7 @@ function showJobs(force = false) {
     const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток: ${result.attempts.length}`);
     for (const question of result.unresolvedQuestions || []) description.append(node('small', reviewDetail(question), 'quiz-meta'));
     if (sourceSummary(last)) description.append(node('small', sourceSummary(last), 'quiz-meta'));
+    if (Number.isFinite(last?.gradePercent)) description.append(node('small', `В журнале Moodle: ${last.gradePercent}%`, 'quiz-meta'));
     if (last?.sources?.length) {
       const review = node('details'); review.append(node('summary', 'Проверка каждого вопроса Moodle'));
       const list = node('ul');
@@ -246,7 +248,7 @@ function render(overview, cached = false, force = false) {
       const attempts = usage ? `Использовано: ${usage.used ?? 'неизвестно'} · лимит: ${usage.unlimited ? 'без ограничений' : usage.allowed ?? 'неизвестен'} · осталось новых: ${usage.unlimited ? 'без ограничений' : usage.remaining ?? 'неизвестно'}`
         : Number.isInteger(q.attempts) ? `Попыток в истории: ${q.attempts} · лимит неизвестен` : 'Лимит попыток ещё не проверен';
       const info = [q.activeAttempt ? 'Активная попытка · продолжение при запуске' : q.preflightRequired ? 'Нужно подтвердить начало в Moodle' : '', attempts];
-      if (q.analysis) info.push(`В памяти: ${q.analysis.known}/${q.analysis.total}`, `Нерешённых: ${q.analysis.unresolved}`, q.analysis.withExclusions ? `С исключёнными ответами: ${q.analysis.withExclusions}` : '', q.analysis.conflict ? `Конфликтов: ${q.analysis.conflict}` : '', q.analysis.unsupported ? `Не поддерживается: ${q.analysis.unsupported}` : '');
+      if (q.analysis) info.push(`В памяти: ${q.analysis.known}/${q.analysis.total} (по прошлой попытке)`, `Нерешённых: ${q.analysis.unresolved}`, q.analysis.withExclusions ? `С исключёнными ответами: ${q.analysis.withExclusions}` : '', q.analysis.conflict ? `Конфликтов: ${q.analysis.conflict}` : '', q.analysis.unsupported ? `Не поддерживается: ${q.analysis.unsupported}` : '');
       if (q.detailCheckedAt) info.push(`Попытки проверены: ${time(q.detailCheckedAt)}`);
       else if (q.analysis || q.activeAttempt || q.attempts) info.push('Состояние попыток — из сохранённого подробного анализа');
       if (q.error || q.reviewError) info.push('Анализ требует проверки');
