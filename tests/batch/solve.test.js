@@ -317,6 +317,14 @@ test('Web validates request identity, coverage, answers and observed source link
   assert.equal(excluded.status, 'needs_review'); assert.equal(excluded.answer, null);
   assert.equal(excluded.reviewReason, 'excluded_answer');
   assert.ok(!webPrompt([question], { text: '' }, 'nonce').includes('sequencecheck'));
+  const explanation = 'Источники подтверждают несколько вариантов, но разрешён только один ответ.';
+  const uncertain = { ...result, answers: [{ ...result.answers[0], needsReview: true, confidence: 0.99, reviewExplanation: explanation }] };
+  const reviewed = parseWeb(JSON.stringify(uncertain), [question], 'nonce', result.answers[0].sourceUrls)[0];
+  assert.equal(reviewed.status, 'needs_review', 'an explanation and high confidence cannot authorize an uncertain answer');
+  assert.equal(reviewed.reviewExplanation, explanation);
+  assert.equal(parseWeb(JSON.stringify({ ...uncertain, answers: [{ ...uncertain.answers[0], reviewExplanation: 'x'.repeat(500) }] }), [question], 'nonce', [])[0].reviewExplanation.length, 400);
+  const clarification = JSON.parse(webPrompt([{ ...question, reviewReason: 'model_uncertain', previousReviewExplanation: explanation }], { text: '' }, 'nonce').split('\n').at(-1));
+  assert.equal(clarification.questions[0].previousReviewExplanation, explanation);
   await assert.rejects(readyWeb({ title: async () => 'Just a moment...' }), /GPT_WEB_CHALLENGE/);
 });
 

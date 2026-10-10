@@ -97,6 +97,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           quiz.error = code; quiz.status = 'error';
           if (Array.isArray(error.unresolvedQuestions)) quiz.unresolvedQuestions = error.unresolvedQuestions.map(q => ({
             slot: String(q.slot), reason: String(q.reason), provider: q.provider || null,
+            ...(typeof q.explanation === 'string' ? { explanation: q.explanation.slice(0, 400) } : {}),
             ...(Number.isFinite(q.confidence) && q.confidence >= 0 && q.confidence <= 1 ? { confidence: q.confidence } : {}) }));
           if (code === 'LOGIN_REQUIRED') moodle.authRequired = true;
           await save();

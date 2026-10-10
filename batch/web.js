@@ -20,6 +20,7 @@ export function webPrompt(questions, context, requestId) {
     + 'Сохраняй написание и грамматическую форму из источника: не заменяй словесное число цифрой и наоборот. Не добавляй пояснения и кавычки. '
     + 'Для text/numerical используй число в требуемом формате. '
     + 'Если ответа недостаточно, поставь needsReview=true и answer=null. Не выдумывай ID или источники.\n'
+    + 'При needsReview=true добавь reviewExplanation: одно короткое предложение до 400 символов о недостающем факте или конкретном противоречии. Для choice, если источники подтверждают несколько вариантов, явно укажи это. Не описывай ход рассуждений. '
     + 'Для каждого ответа sourceUrls должны содержать точные URL страниц из результатов твоего веб-поиска, которые подтверждают этот ответ. '
     + 'Если первый поиск не подтвердил ответ, ищи повторно другими формулировками; предпочитай первоисточник и точную формулировку учебного материала. '
     + 'Проверь отрицания, исключения, число требуемых вариантов и каждый элемент multiple/matching. При противоречиях сравни источники и контекст. '
@@ -50,7 +51,8 @@ export function webPrompt(questions, context, requestId) {
         excludedAnswers: q.memory?.excludedAnswers || [],
         ...(q.memory?.multipleOptions ? { multipleMemory: q.memory.multipleOptions } : {}),
         ...(q.memory?.matchingRows ? { matchingMemory: q.memory.matchingRows } : {}),
-        ...(q.reviewReason ? { reviewReason: q.reviewReason, previousEvidence: q.previousEvidence, previousRejectedAnswer: q.previousRejectedAnswer } : {}),
+        ...(q.reviewReason ? { reviewReason: q.reviewReason, previousEvidence: q.previousEvidence, previousRejectedAnswer: q.previousRejectedAnswer,
+          ...(q.previousReviewExplanation ? { previousReviewExplanation: q.previousReviewExplanation } : {}) } : {}),
         ...(Object.hasOwn(q, 'previousUnverifiedAnswer') ? { previousUnverifiedAnswer: q.previousUnverifiedAnswer } : {}) })) });
 }
 
@@ -66,11 +68,13 @@ export function parseWeb(text, questions, requestId, citations) {
   return questions.map(q => {
     const item = result.answers.find(a => a.slot === q.slot);
     if (!item || typeof item.needsReview !== 'boolean' || !Array.isArray(item.sourceUrls)) throw new Error('INVALID_WEB_RESPONSE');
+    if (item.reviewExplanation !== undefined && typeof item.reviewExplanation !== 'string') throw new Error('INVALID_WEB_RESPONSE');
+    const review = item.reviewExplanation?.trim() ? { reviewExplanation: item.reviewExplanation.trim().slice(0, 400) } : {};
     const sourceUrls = item.sourceUrls.filter(url => sourceKey(url) && observed.has(sourceKey(url)));
     if (Object.hasOwn(item, 'confidence') && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) throw new Error('INVALID_WEB_RESPONSE');
     const confidence = item.confidence === undefined ? {} : { confidence: item.confidence };
     if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < 0.85)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
-      ...confidence, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
+      ...confidence, ...review, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
     // Validate the model's type before applying the legacy short-answer rules.
     answerSignature(q, item.answer);
     const answer = q.type === 'text' && q.textFormat !== 'numerical'

@@ -63,6 +63,7 @@ export function buildSubmission(test, questions) {
       error.unresolvedQuestions = questions.filter(item => ['conflict', 'unsupported'].includes(item.memory?.status)
         || !['confirmed', 'candidate'].includes(item.decision?.status)).map(item => ({ slot: item.slot,
         reason: item.decision?.reviewReason || item.memory?.status || 'unresolved', provider: item.decision?.provider || null,
+        ...(item.decision?.reviewExplanation ? { explanation: item.decision.reviewExplanation } : {}),
         ...(Number.isFinite(item.decision?.confidence) ? { confidence: item.decision.confidence } : {}) }));
       throw error;
     }

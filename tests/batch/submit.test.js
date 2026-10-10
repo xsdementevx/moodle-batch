@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digest, optionId } from '../../batch/answers.js';
@@ -70,7 +70,7 @@ test('minimum attempt time uses question count, recorded start, durable resume a
     await writeFile(legacyJournal, JSON.stringify({ state: 'complete', result: { attemptUrl: attempt.sourceUrl } }));
     const legacy = await rememberAttemptStart(attempt, join(dir, 'legacy.timing'), legacyJournal, () => Date.now() + 10000);
     assert.equal(legacy.source, 'recorded_start');
-    assert.ok(legacy.startedAt <= Date.now());
+    assert.equal(legacy.startedAt, (await stat(legacyJournal)).mtimeMs);
     const cancelled = join(dir, 'cancelled.json');
     await assert.rejects(submitTest({ collect: () => assert.fail('cancelled wait must not refresh or POST') }, attempt, attempt.questions, cancelled, {
       secondsPerQuestion: 10, now, stopped: () => stopped, sleep: async ms => { clock += ms; stopped = true; },
@@ -127,9 +127,11 @@ test('one final request maps stable answers to native fields and rejects unresol
   assert.throws(() => buildSubmission({ ...attempt, kind: 'review' }, attempt.questions), /ACTIVE_COMPLETE_ATTEMPT/);
   const bad = structuredClone(attempt);
   bad.questions[0].decision.status = 'needs_review';
+  bad.questions[0].decision.reviewExplanation = 'Источники подтверждают несколько вариантов.';
   assert.throws(() => buildSubmission(bad, bad.questions), /UNRESOLVED/);
   try { buildSubmission(bad, bad.questions); assert.fail('must stop unresolved answer'); }
-  catch (error) { assert.equal(error.unresolvedQuestions[0].slot, '1'); assert.ok(error.unresolvedQuestions[0].reason); }
+  catch (error) { assert.equal(error.unresolvedQuestions[0].slot, '1'); assert.ok(error.unresolvedQuestions[0].reason);
+    assert.equal(error.unresolvedQuestions[0].explanation, 'Источники подтверждают несколько вариантов.'); }
   bad.questions[0].decision.status = 'candidate';
   bad.questions[0].memory.excludedAnswers = [bad.questions[0].decision.answer];
   assert.throws(() => buildSubmission(bad, bad.questions), /EXCLUDED/);

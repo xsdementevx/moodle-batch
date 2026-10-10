@@ -36,7 +36,7 @@ const effortLabel = { Instant: 'Лёгкое размышление', Medium: '�
 const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
 const feedbackLabel = value => ({ correct: 'Верно', incorrect: 'Неверно', partiallycorrect: 'Частично верно', unconfirmed: 'Результат не раскрыт' }[value] || 'Результат не раскрыт');
-const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}`;
+const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${question.explanation ? ` · ${question.explanation}` : ''}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}`;
 function problemDetails(q) {
   const latest = current?.jobs.slice().reverse().flatMap(job => job.results || []).find(result => result.quizId === q.quizId);
   const code = latest?.error || q.error || q.reviewError;

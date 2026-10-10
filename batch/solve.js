@@ -237,6 +237,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       const reviewQuestion = q => {
         const decision = decisions.get(q.slot);
         return { ...q, previousUnverifiedAnswer: decision.answer, reviewReason: decision.reviewReason,
+          previousReviewExplanation: decision.reviewExplanation,
           previousEvidence: decision.evidence, previousRejectedAnswer: decision.rejectedAnswer };
       };
       let review = batch.filter(q => decisions.get(q.slot)?.status === 'needs_review')
@@ -254,7 +255,8 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         for (const reasoning of ['medium', 'high']) {
           if (!review.length) break;
           check();
-          const reviewId = digest(['web-escalation-v2-feedback', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer, q.reviewReason, q.previousEvidence, q.previousRejectedAnswer])]);
+          const reviewId = digest(['web-escalation-v2-feedback', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer, q.reviewReason, q.previousEvidence, q.previousRejectedAnswer,
+            ...(q.previousReviewExplanation ? [q.previousReviewExplanation] : [])])]);
           await progress('solving', { provider: 'Web', reasoning: reasoning === 'medium' ? 'Medium' : 'High', questions: review.length,
             tests: new Set(review.map(q => q.quizId)).size });
           results = await web(review, scoped, { requestId: reviewId, journalPath: join(journalDir, `${reviewId}.json`), reasoning,

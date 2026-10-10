@@ -357,6 +357,11 @@ test('installed extension recovers a lost start reply after reopening without ch
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
     await reopened.getByText('Проверка каждого вопроса Moodle', { exact: true }).click();
     assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);
+    service.state().jobs[0].results[0].unresolvedQuestions = [{ slot: '2', reason: 'model_uncertain', explanation: 'Источники подтверждают несколько вариантов.' }];
+    await reopened.getByText('Вопрос 2: Модель не уверена в ответе · Источники подтверждают несколько вариантов.', { exact: true }).waitFor();
+    await reopened.locator('#copy-report').click();
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Источники подтверждают несколько вариантов\./);
+    service.state().jobs[0].results[0].unresolvedQuestions = [];
     await reopened.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; });
     await reopened.locator('#copy-report').click();
     assert.equal(await reopened.locator('#log-export').isVisible(), true);
@@ -453,7 +458,7 @@ test('batch errors become visible immediately with question reasons and are not 
   let service, release; const gate = new Promise(done => { release = done; });
   try {
     service = await openService({ ...deps(root), batchRunner: async (moodle, store, ids, options) => {
-      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web' }];
+      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web', explanation: 'Нет точной цитаты для выбранного ответа.' }];
       await options.onError('20', error); await gate;
       return [{ quizId: '20', error }];
     } });
@@ -461,6 +466,7 @@ test('batch errors become visible immediately with question reasons and are not 
     while (!service.state().jobs[0].results[0]?.error) await new Promise(done => setTimeout(done, 5));
     assert.equal(service.state().jobs[0].status, 'running');
     assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].reason, 'source_quote_not_found');
+    assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].explanation, 'Нет точной цитаты для выбранного ответа.');
     release(); await waitDone(service);
     assert.equal(service.state().jobs[0].events.filter(e => e.kind === 'error').length, 1);
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
