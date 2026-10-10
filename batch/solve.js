@@ -168,10 +168,11 @@ export async function pendingModelTests(questions, journalDir) {
   return blocked;
 }
 
-export async function solveTest(questions, context, { journalDir, jev = requestJev, web, stopped = () => false, progress = async () => {} } = {}) {
+export async function solveTest(questions, context, { journalDir, jev = requestJev, web, stopped = () => false, progress = async () => {}, onAnswers = async () => {} } = {}) {
   if (new Set(questions.map(q => q.slot)).size !== questions.length) throw new Error('DUPLICATE_QUESTION_ID');
   const check = () => { if (stopped()) throw new Error('STOPPED'); };
   const decisions = new Map(questions.filter(q => q.memory?.status === 'known').map(q => [q.slot, { provider: 'memory', answer: q.memory.answer, status: 'confirmed', verifiedByMoodle: true }]));
+  const notify = () => onAnswers(questions.map(q => ({ ...q, decision: decisions.get(q.slot) || null })));
   const unresolved = questions.filter(q => q.memory?.status === 'unresolved');
   if (!unresolved.length) return questions.map(q => ({ ...q, decision: decisions.get(q.slot) || null }));
   const identity = q => `${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`;
@@ -194,6 +195,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     }
   }
   const bindings = batch => batch.map(q => ({ slot: q.slot, fingerprint: questionFingerprint(q, context) }));
+  await notify();
   const eligible = unresolved.filter(q => !decisions.has(q.slot) && ['choice', 'multiple', 'matching'].includes(q.type)
     && (context.documents?.[q.contextId] || context).status === 'ready'
     && (context.documents?.[q.contextId] || context).text.length >= 100).filter(q => {
@@ -234,6 +236,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           ? { ...result, provider: 'jev', verifiedBy: 'gpt_web' } : result);
       };
       for (const result of results) accept(result);
+      await notify();
       const reviewQuestion = q => {
         const decision = decisions.get(q.slot);
         return { ...q, previousUnverifiedAnswer: decision.answer, reviewReason: decision.reviewReason,
@@ -264,6 +267,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
             questionIds: review.map(identity), bindings: bindings(review) });
           parents.push(reviewId);
           for (const result of results) accept(result);
+          await notify();
           review = review.filter(q => decisions.get(q.slot)?.status === 'needs_review')
             .map(reviewQuestion);
         }

@@ -271,6 +271,20 @@ test('shared runner submits native slots to each test and isolates an unresolved
       solve: () => assert.fail('unscoped legacy pending request must block all unresolved tests') });
     assert.equal(legacy.length, 2);
     assert.ok(legacy.every(q => q.error.message === 'UNKNOWN_MODEL_OUTCOME'));
+    const earlyCompleted = [];
+    const early = await runQuizzes(moodle, store, ['20', '21'], { root: join(root, 'early'),
+      contextLoader: async () => ({ status: 'missing', text: '' }), onResult: result => earlyCompleted.push(result.quizId),
+      solve: async (questions, context, options) => {
+        const answers = questions.map(q => ({ ...q, decision: q.quizId === '20'
+          ? { provider: 'gpt_web', status: 'candidate', answer: [optionId('A')] } : { status: 'needs_review', answer: null } }));
+        await options.onAnswers(answers);
+        assert.deepEqual(earlyCompleted, ['20'], 'a complete verified test finishes before clarification of another test');
+        await options.onAnswers(answers);
+        assert.equal(submitted.length, 2, 'repeated answer snapshots never resubmit a test');
+        throw new Error('MODEL_SECOND_FAILED');
+      } });
+    assert.equal(early.find(q => q.quizId === '20').result.percent, 100);
+    assert.equal(early.find(q => q.quizId === '21').error.message, 'MODEL_SECOND_FAILED');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

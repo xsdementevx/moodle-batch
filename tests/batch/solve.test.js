@@ -333,9 +333,11 @@ test('web verification revisits only needs_review questions and reuses escalatio
   const questions = [q('1'), q('2')];
   const context = { status: 'missing', text: '', contextHash: null };
   const calls = [];
+  const notified = [];
   const web = (batch, context, options) => checkpointed(options.journalPath, async () => {
     calls.push(batch.map(q => q.slot));
     if (calls.length === 2) {
+      assert.ok(notified.some(states => states[0] === 'needs_review' && states[1] === 'candidate'));
       assert.equal(batch[0].reviewReason, 'context_quote_not_found');
       assert.equal(batch[0].previousEvidence.quote, 'A quote missing from the material.');
       const input = JSON.parse(webPrompt(batch, context, options.requestId).split('\n').at(-1));
@@ -346,7 +348,7 @@ test('web verification revisits only needs_review questions and reuses escalatio
       status: question.slot === '1' && !Object.hasOwn(question, 'previousUnverifiedAnswer') ? 'needs_review' : 'candidate' }));
   });
   try {
-    const result = await solveTest(questions, context, { journalDir: dir, web });
+    const result = await solveTest(questions, context, { journalDir: dir, web, onAnswers: answers => { notified.push(answers.map(q => q.decision?.status)); } });
     assert.deepEqual(calls, [['1', '2'], ['1']]);
     assert.deepEqual(result.map(q => q.decision.status), ['candidate', 'candidate']);
     await solveTest(questions, context, { journalDir: dir, web });

@@ -95,16 +95,24 @@ export async function runQuiz(moodle, store, quizId, options = {}) {
 // One preparation/solve round across all selected tests; native submissions stay separate.
 export async function runQuizzes(moodle, store, quizIds, options = {}) {
   const prepared = [], results = [];
+  const finished = new Set();
+  let finishing = Promise.resolve();
   const failed = async (quizId, error) => { results.push({ quizId, error }); await options.onError?.(quizId, error); };
   const progress = (quizId, stage, detail = {}) => options.progress?.(stage, { quizId, ...detail });
-  const finish = async (p, questions) => {
+  const finish = (p, questions) => {
     const quizId = p.test.quizId;
+    if (finished.has(quizId)) return Promise.resolve();
+    finished.add(quizId);
+    const task = finishing.then(async () => {
     if (options.stopped?.()) { await failed(quizId, new Error('STOPPED')); return; }
     try {
       const result = await finishQuiz(moodle, store, p, questions, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) });
       results.push({ quizId, result });
       await options.onResult?.(result);
     } catch (error) { await failed(quizId, error); }
+    });
+    finishing = task.catch(() => {});
+    return task;
   };
   for (const quizId of quizIds) {
     if (options.stopped?.()) break;
@@ -135,7 +143,13 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
     if (options.stopped?.()) throw new Error('STOPPED');
     await options.progress?.('solving', { tests: unresolved.length, total: questions.length });
     return { solved: await (options.solve || solveTest)(questions, { documents },
-      { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress }) };
+      { journalDir: join(options.root, 'operations'), web: options.web, stopped: options.stopped, progress: options.progress,
+        onAnswers: async answers => {
+          for (const p of unresolved) {
+            const native = answers.filter(q => q.quizId === p.test.quizId).map(({ nativeSlot, contextId, ...q }) => ({ ...q, slot: nativeSlot }));
+            if (native.length === p.questions.length && native.every(q => ['candidate', 'confirmed'].includes(q.decision?.status))) await finish(p, native);
+          }
+        } }) };
   } catch (error) { return { error }; } })();
   for (const p of known) {
     try { await finish(p, await solveTest(p.questions, p.context, { stopped: options.stopped })); }
@@ -144,7 +158,7 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
   const { solved, error } = await pendingSolve;
   if (error) {
     console.error('Moodle Batch solver:', error.name, String(error.message).split('\n')[0].slice(0, 180));
-    for (const p of unresolved) await failed(p.test.quizId, error);
+    for (const p of unresolved) if (!finished.has(p.test.quizId)) await failed(p.test.quizId, error);
     return results;
   }
   for (const p of unresolved) {
