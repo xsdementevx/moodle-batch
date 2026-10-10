@@ -190,9 +190,11 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
       for (const q of unresolved) {
         const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
-        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true);
+        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true
+          && (q.type !== 'multiple' || /^(?:medium|high|Средний|Высокий)$/iu.test(a.reasoning || saved.result.reasoning || '')));
         if (answer) {
-          try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true }); }
+          try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,
+            ...(answer.reasoning || saved.result.reasoning ? { reasoning: answer.reasoning || saved.result.reasoning } : {}) }); }
           catch { /* a malformed old result never becomes a reusable answer */ }
         }
       }
@@ -235,9 +237,12 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });
       const results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
         questionIds: batch.map(identity), bindings: bindings(batch) });
-      const accept = answer => {
-        const result = reviewConfidence(answer);
+      const accept = (answer, reasoning = 'instant') => {
+        let result = reviewConfidence(answer);
         const prior = jevAnswers.get(result.slot), q = batch.find(q => q.slot === result.slot);
+        if (q.type === 'multiple' && result.status === 'candidate' && reasoning === 'instant') {
+          result = { ...result, status: 'needs_review', reviewReason: 'multiple_completeness' };
+        }
         decisions.set(result.slot, prior && result.status === 'candidate' && answerSignature(q, prior.answer) === answerSignature(q, result.answer)
           ? { ...result, provider: 'jev', verifiedBy: 'gpt_web' } : result);
       };
@@ -278,7 +283,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
             continueUrl: results[0]?.conversationUrl, parentRequestId: results[0]?.conversationUrl ? [...parents] : undefined,
             questionIds: review.map(identity), bindings: bindings(review) });
           parents.push(reviewId);
-          for (const result of results) accept(result);
+          for (const result of results) accept(result, reasoning);
           await notify();
           review = review.filter(q => decisions.get(q.slot)?.status === 'needs_review')
             .map(reviewQuestion);

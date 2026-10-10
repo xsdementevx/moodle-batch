@@ -418,6 +418,35 @@ test('verified cached answers survive regrouping but changed wording, context or
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('multiple answers check omitted options at Medium even with 99% confidence and reuse the checked result', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-multiple-review-'));
+  const context = { status: 'missing', text: '', contextHash: null };
+  const questions = [q('1', { type: 'multiple' }), q('2'), q('3', { type: 'multiple', memory: { status: 'known', answer: [options[0].id] } })];
+  const calls = [], snapshots = [];
+  const web = (batch, material, opts) => checkpointed(opts.journalPath, async () => {
+    calls.push({ effort: opts.reasoning, slots: batch.map(q => q.slot) });
+    if (opts.reasoning === 'medium') {
+      assert.equal(batch[0].reviewReason, 'multiple_completeness');
+      assert.equal(opts.continueUrl, 'https://chatgpt.com/c/multiple');
+      assert.ok(snapshots.some(s => s[0] === 'needs_review' && s[1] === 'candidate' && s[2] === 'confirmed'));
+      assert.match(webPrompt(batch, material, opts.requestId), /включая не выбранные ранее/);
+    }
+    return { reasoning: opts.reasoning === 'medium' ? 'Средний' : 'Instant', answers: batch.map(q => ({ slot: q.slot,
+      provider: 'gpt_web', status: 'candidate', confidence: 0.99, evidenceVerified: true,
+      answer: q.type === 'multiple' && opts.reasoning === 'medium' ? options.map(o => o.id) : [options[0].id],
+      conversationUrl: 'https://chatgpt.com/c/multiple' })) };
+  }, opts.questionIds, opts.bindings).then(result => result.answers);
+  try {
+    const result = await solveTest(questions, context, { journalDir: dir, web, onAnswers: answers => snapshots.push(answers.map(q => q.decision?.status)) });
+    assert.deepEqual(calls, [{ effort: 'instant', slots: ['1', '2'] }, { effort: 'medium', slots: ['1'] }]);
+    assert.deepEqual(result[0].decision.answer, options.map(o => o.id));
+    assert.equal(result[2].decision.provider, 'memory');
+    const cached = await solveTest(questions, context, { journalDir: dir, web: () => assert.fail('checked multiple answer must be reused') });
+    assert.deepEqual(cached[0].decision.answer, options.map(o => o.id));
+    assert.equal(cached[0].decision.reasoning, 'Средний');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('independent context packets get Instant answers before clarification and retain their own conversation', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-instant-first-'));
   const context = { documents: { first: { status: 'missing', text: 'Alpha '.repeat(10000), contextHash: 'first' },
