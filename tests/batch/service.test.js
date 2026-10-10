@@ -30,10 +30,12 @@ test('service runs one durable job, rejects another and stops retries after veri
   let release; const gate = new Promise(done => { release = done; });
   try {
     service = await openService({ ...deps(root), runner: async (moodle, store, quizId, options) => {
+      assert.deepEqual(options.importedReviews['20'], [`${scope.origin}/mod/quiz/review.php?attempt=1&cmid=20`]);
       calls++; await options.progress('solving', { quizId, provider: 'Jev', questions: 1, context: 'private synthetic context' });
       await gate; return { quizId: '20', courseId: '10', percent: calls === 1 ? 80 : 100, gradePercent: calls === 1 ? 80 : 100 };
     } });
     await service.refresh();
+    service.state().overview.courses[0].quizzes[0].importedReviews = [`${scope.origin}/mod/quiz/review.php?attempt=1&cmid=20`];
     await service.start(input);
     assert.equal((await service.start(input)).requestId, input.requestId);
     await assert.rejects(service.start({ ...input, requestId: 'synthetic-request-5678' }), /ALREADY_RUNNING/);
@@ -83,6 +85,22 @@ test('preparation skips material requests when all questions are confirmed in me
     const prepared = await prepareQuiz(moodle, store, '20', { root, contextLoader: () => assert.fail('confirmed answers must not download materials') });
     assert.equal(prepared.context.reason, 'NO_UNRESOLVED_QUESTIONS');
     assert.equal(prepared.questions[0].memory.status, 'known');
+    view.reviews = ['1', '2', '3'].map(attempt => `${scope.origin}/mod/quiz/review.php?attempt=${attempt}&cmid=20`);
+    const reads = [], imports = [];
+    moodle.collect = async url => {
+      if (url.includes('review.php')) { const attempt = new URL(url).searchParams.get('attempt'); reads.push(attempt);
+        return { ...scope, attemptId: attempt, kind: 'review', questions: [attempt] }; }
+      return { ...scope, kind: 'attempt', complete: true, questions: [{ ...scope, slot: '1' }] };
+    };
+    store.importReview = questions => imports.push(...questions);
+    await prepareQuiz(moodle, store, '20', { root, importedReviews: { '20': [view.reviews[0], view.reviews[2]] },
+      contextLoader: () => assert.fail('confirmed answers must not download materials') });
+    assert.deepEqual(reads, ['2', '3'], 'unknown history and latest review must be read, even when latest is cached');
+    assert.deepEqual(imports, ['2', '3']);
+    reads.length = 0;
+    await prepareQuiz(moodle, store, '20', { root, importedReviews: { '21': view.reviews },
+      contextLoader: () => assert.fail('confirmed answers must not download materials') });
+    assert.deepEqual(reads, ['1', '2', '3'], 'a different quiz cache cannot skip any review');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

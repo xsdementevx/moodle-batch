@@ -4,7 +4,7 @@ import { solveTest, pendingModelTests } from './solve.js';
 import { startTest, startId, submitTest, submissionId, rememberAttemptStart } from './submit.js';
 
 export async function prepareQuiz(moodle, store, quizId, { root, progress = async () => {}, stopped = () => false,
-  contextLoader = loadContext, now = Date.now } = {}) {
+  contextLoader = loadContext, now = Date.now, importedReviews = {} } = {}) {
   const check = () => { if (stopped()) throw new Error('STOPPED'); };
   check();
   await progress('reading');
@@ -15,8 +15,10 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
   };
   validate(view);
   await progress('reading', { attemptUsage: view.attemptUsage, activeAttempt: Boolean(view.activeUrl || view.activeAttempt) });
+  const imported = new Set(importedReviews[quizId] || []);
   for (const href of view.reviews) {
     check();
+    if (imported.has(href) && href !== view.reviews.at(-1)) continue;
     const url = new URL(href); url.searchParams.set('showall', '1');
     const review = await moodle.collect(url.href);
     validate(review);

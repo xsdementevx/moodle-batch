@@ -103,6 +103,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           await save();
         };
         const options = { root, web, secondsPerQuestion: job.secondsPerQuestion ?? 0, stopped: () => job.stopRequested,
+          importedReviews: Object.fromEntries((overview?.courses || []).flatMap(course => course.quizzes.map(quiz => [quiz.quizId, quiz.importedReviews || []]))),
           onError,
           progress: async (stage, detail = {}) => {
             job.current = { round: n + 1, stage, ...detail }; event(job, 'stage', job.current);
