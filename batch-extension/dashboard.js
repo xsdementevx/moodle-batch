@@ -36,6 +36,12 @@ const effortLabel = { Instant: 'Лёгкое размышление', Medium: '�
 const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
 const feedbackLabel = value => ({ correct: 'Верно', incorrect: 'Неверно', partiallycorrect: 'Частично верно', unconfirmed: 'Результат не раскрыт' }[value] || 'Результат не раскрыт');
+const answerDetails = source => [
+  ...(source.question ? [`Формулировка: ${source.question}`] : []),
+  ...(source.answer?.length ? [`Отправлено: ${source.answer.join('; ')}`] : []),
+  ...(Number.isFinite(source.confidence) ? [`Уверенность модели: ${Math.round(source.confidence * 100)}%`] : []),
+  ...(source.evidence || []).map(e => `Цитата: «${e.quote}» · ${e.kind === 'context' ? 'материалы курса' : e.url}`),
+];
 const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${question.explanation ? ` · ${question.explanation}` : ''}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}`;
 function problemDetails(q) {
   const latest = current?.jobs.slice().reverse().flatMap(job => job.results || []).find(result => result.quizId === q.quizId);
@@ -119,6 +125,7 @@ function reportFor(job) {
       if (attempt.timing) lines.push(`  Время до отправки: ${duration(attempt.timing.elapsedSeconds)}; минимум: ${duration(attempt.timing.minimumSeconds)}; начало отсчёта: ${time(new Date(attempt.timing.startedAt).toISOString())}${attempt.timing.source === 'first_seen' ? ' (первое обнаружение)' : ''}`);
       for (const source of attempt.sources || []) {
         lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${feedbackLabel(source.feedback)}`);
+        for (const detail of answerDetails(source)) lines.push(`      ${detail}`);
         for (const option of source.options || []) lines.push(`      ${option.text}: ${feedbackLabel(option.feedback)}`);
       }
     }
@@ -166,7 +173,9 @@ function showJobs(force = false) {
       const review = node('details'); review.append(node('summary', 'Проверка каждого вопроса Moodle'));
       const list = node('ul');
       for (const source of last.sources) {
-        const item = node('li', `Вопрос ${source.slot}: ${feedbackLabel(source.feedback)} · ${source.provider || 'провайдер не указан'}`, source.feedback === 'correct' ? 'good' : ['incorrect', 'partiallycorrect'].includes(source.feedback) ? 'job-error' : '');
+        const item = node('li', undefined, source.feedback === 'correct' ? 'good' : ['incorrect', 'partiallycorrect'].includes(source.feedback) ? 'job-error' : '');
+        item.append(node('span', `Вопрос ${source.slot}: ${feedbackLabel(source.feedback)} · ${source.provider || 'провайдер не указан'}`));
+        for (const detail of answerDetails(source)) item.append(node('small', detail, 'quiz-meta'));
         if (source.options?.length) {
           const options = node('ul');
           for (const option of source.options) options.append(node('li', `${option.text}: ${feedbackLabel(option.feedback)}`, option.feedback === 'correct' ? 'good' : option.feedback === 'incorrect' ? 'job-error' : 'muted'));

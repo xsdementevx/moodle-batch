@@ -78,11 +78,21 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, sec
   return { quizId, courseId: view.courseId, attemptId: test.attemptId, reviewUrl: submission.reviewUrl, grade, percent, gradePercent, attemptUsage,
     total: review.questions.length, correct: review.questions.filter(q => q.feedback === 'correct').length,
     ...(submission.timing ? { timing: submission.timing } : {}),
-    sources: questions.map(q => ({ slot: q.slot, provider: q.decision?.provider,
+    sources: questions.map(q => {
+      const native = review.questions.find(item => item.slot === q.slot);
+      const answer = native?.type === 'text' ? [native.textAnswer].filter(value => value != null)
+        : native?.type === 'matching' ? native.rows.map(row => `${row.text}: ${row.options.find(o => o.value === row.selectedValue)?.text || 'без ответа'}`)
+        : native?.options.filter(o => o.selected).map(o => o.text) || [];
+      return { slot: q.slot, question: q.text, answer, provider: q.decision?.provider,
       ...(q.decision?.cached ? { cached: true } : {}),
       ...(q.decision?.reasoning ? { reasoning: q.decision.reasoning } : {}),
-      feedback: review.questions.find(item => item.slot === q.slot)?.feedback,
-      ...(q.type === 'multiple' ? { options: review.questions.find(item => item.slot === q.slot)?.options.filter(o => o.selected).map(o => ({ text: o.text, feedback: o.feedback })) || [] } : {}) })) };
+      ...(Number.isFinite(q.decision?.confidence) ? { confidence: q.decision.confidence } : {}),
+      ...(q.decision?.evidenceVerified ? { evidence: (Array.isArray(q.decision.evidence) ? q.decision.evidence : [q.decision.evidence])
+        .filter(e => ['context', 'web'].includes(e?.kind) && typeof e.quote === 'string')
+        .map(e => ({ kind: e.kind, quote: e.quote, ...(e.kind === 'web' ? { url: e.url } : {}) })) } : {}),
+      feedback: native?.feedback,
+      ...(q.type === 'multiple' ? { options: native?.options.filter(o => o.selected).map(o => ({ text: o.text, feedback: o.feedback })) || [] } : {}) };
+    }) };
 }
 
 export async function runQuiz(moodle, store, quizId, options = {}) {

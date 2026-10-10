@@ -190,7 +190,7 @@ test('real runner keeps native submission, checks Stop and records model attribu
   const attempt = { ...scope, kind: 'attempt', complete: true, questions: [question], sourceUrl: `${scope.origin}/mod/quiz/attempt.php?attempt=30&cmid=20`,
     submissionForms: [{ method: 'post', action: `${scope.origin}/mod/quiz/processattempt.php`, sesskey: 'synthetic', slots: ['1'] }] };
   const view = { ...scope, kind: 'view', reviews: [], activeUrl: attempt.sourceUrl };
-  const review = { ...scope, kind: 'review', questions: [{ ...question, feedback: 'correct' }], resultSummary: [{ label: 'Оценка', value: '10 из 10 (100,00%)' }] };
+  const review = { ...scope, kind: 'review', questions: [{ ...question, options: question.options.map((o, i) => ({ ...o, selected: i === 0 })), feedback: 'correct' }], resultSummary: [{ label: 'Оценка', value: '10 из 10 (100,00%)' }] };
   const moodle = { ...scope, grades: async id => { assert.equal(id, '10'); return [{ quizId: '20', percent: 100 }]; }, read: async () => view, collect: async url => url.includes('review.php') ? review : attempt,
     postSubmission: async () => { submitted++; return { reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } };
   const store = { importReview: () => imported++, lookup: () => ({ status: 'known', answer: [optionId('A')], excludedAnswers: [] }) };
@@ -198,12 +198,19 @@ test('real runner keeps native submission, checks Stop and records model attribu
   try {
     const result = await runQuiz(moodle, store, '20', options);
     assert.equal(result.percent, 100); assert.equal(result.gradePercent, 100); assert.equal(submitted, 1); assert.equal(imported, 1);
-    assert.deepEqual(result.sources, [{ slot: '1', provider: 'memory', feedback: 'correct' }]);
+    assert.deepEqual(result.sources, [{ slot: '1', question: 'Synthetic question', answer: ['A'], provider: 'memory', feedback: 'correct' }]);
     stopped = true;
     await assert.rejects(runQuiz(moodle, store, '20', options), /STOPPED/);
     assert.equal(submitted, 1);
     stopped = false;
     await assert.rejects(runQuiz({ ...moodle, read: async () => ({ ...view, userScope: '43' }) }, store, '20', options), /SCOPE_MISMATCH/);
+    const evidence = { kind: 'web', url: 'https://example.org/reference', quote: 'The documented answer is A.', optionIds: ['private-option-id'] };
+    const attributed = await runQuiz(moodle, store, '20', { ...options, root: join(root, 'model'),
+      solve: async questions => questions.map(q => ({ ...q, decision: { status: 'candidate', provider: 'gpt-web', confidence: 0.92,
+        answer: [optionId('A')], evidenceVerified: true, evidence: [evidence] } })) });
+    assert.equal(attributed.sources[0].confidence, 0.92);
+    assert.deepEqual(attributed.sources[0].answer, ['A']);
+    assert.deepEqual(attributed.sources[0].evidence, [{ kind: 'web', url: evidence.url, quote: evidence.quote }]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -328,7 +335,8 @@ test('installed extension recovers a lost start reply after reopening without ch
   let context, service, server, calls = 0;
   try {
     service = await openService({ ...deps(root), runner: async () => { calls++; return { percent: 100, gradePercent: 90, grade: '10 из 10 (100%)', correct: 1, total: 1,
-      sources: [{ slot: '1', provider: 'memory', cached: true, feedback: 'correct' }], reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } });
+      sources: [{ slot: '1', provider: 'memory', cached: true, feedback: 'correct', question: 'Synthetic question', answer: ['<img src=x onerror=alert(1)>'], confidence: 0.92,
+        evidence: [{ kind: 'web', quote: 'The documented answer is A.', url: 'https://example.org/reference' }] }], reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } });
     server = serviceServer(service, 'synthetic-token', 49816);
     let lostReply = false, dropReplies = true;
     server.prependListener('request', (req, res) => {
@@ -387,8 +395,13 @@ test('installed extension recovers a lost start reply after reopening without ch
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Итоговая оценка в журнале Moodle: 90%/);
     assert.equal(await reopened.getByText('В журнале Moodle: 90%', { exact: true }).isVisible(), true);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Отправлено: <img src=x onerror=alert\(1\)>/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Уверенность модели: 92%/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Цитата: «The documented answer is A\.» · https:\/\/example.org\/reference/);
     await reopened.getByText('Проверка каждого вопроса Moodle', { exact: true }).click();
     assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);
+    assert.equal(await reopened.getByText('Отправлено: <img src=x onerror=alert(1)>', { exact: true }).isVisible(), true);
+    assert.equal(await reopened.locator('#jobs img').count(), 0, 'answers are rendered as text');
     service.state().jobs[0].results[0].unresolvedQuestions = [{ slot: '2', reason: 'model_uncertain', explanation: 'Источники подтверждают несколько вариантов.' }];
     await reopened.getByText('Вопрос 2: Модель не уверена в ответе · Источники подтверждают несколько вариантов.', { exact: true }).waitFor();
     await reopened.locator('#copy-report').click();
