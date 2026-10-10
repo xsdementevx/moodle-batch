@@ -134,7 +134,22 @@ test('quick grade refresh skips attempt pages and detailed refresh skips importe
   assert.equal(quick.courses[0].quizzes[0].analysis.known, 1);
   assert.equal(quick.courses[0].quizzes[0].detailCheckedAt, first.courses[0].quizzes[0].detailCheckedAt);
   calls.length = 0;
-  await scanOverview(moodle, store, { previous: quick });
+  quick.courses[0].quizzes[0].activeAttempt = true;
+  quick.courses[0].quizzes[0].attemptUsage = { used: 2, limit: 5, remaining: 3 };
+  quick.courses[0].quizzes[0].reviewError = 'HTTP_503';
+  let preserved = 0;
+  const fresh = await scanOverview(moodle, store, { previous: quick, onProgress: snapshot => {
+    const quiz = snapshot.courses[0]?.quizzes[0];
+    if (quiz && snapshot.phase === 'courses') {
+      assert.equal(quiz.activeAttempt, true, 'old active state stays visible until the attempt is checked');
+      assert.equal(quiz.attemptUsage.remaining, 3);
+      assert.equal(quiz.detailCheckedAt, quick.courses[0].quizzes[0].detailCheckedAt);
+      preserved++;
+    }
+  } });
+  assert.ok(preserved > 0);
+  assert.equal(fresh.courses[0].quizzes[0].activeAttempt, false, 'fresh native state replaces the saved state');
+  assert.equal(fresh.courses[0].quizzes[0].reviewError, undefined, 'successful retry clears the previous review error');
   assert.deepEqual(calls, ['discover', 'view', '2']);
   assert.equal(imports, 3, 'latest result stays fresh; old imported result is skipped');
   calls.length = 0;

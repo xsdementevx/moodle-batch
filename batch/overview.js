@@ -44,7 +44,7 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
     try { grades = await moodle.grades(course.courseId); }
     catch (error) { course.gradeError = safeCode(error); }
     // Show gradebook results before course discovery and detailed attempt checks finish.
-    course.quizzes = grades.map(q => ({ ...q, topic: '', courseId: course.courseId,
+    course.quizzes = grades.map(q => ({ ...old?.quizzes.find(prior => prior.quizId === q.quizId), ...q, topic: '', courseId: course.courseId,
       url: `${moodle.origin}/mod/quiz/view.php?id=${q.quizId}`, status: gradeStatus(q.percent), checked: false }));
     course.status = 'discovering'; course.summary = courseSummary(course.quizzes);
     onProgress(snapshot);
@@ -52,7 +52,7 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
     catch (error) { course.discoveryError = safeCode(error); }
     const combined = new Map(grades.map(q => [q.quizId, { ...q, topic: '' }]));
     for (const ref of refs) combined.set(ref.quizId, { ...ref, percent: combined.get(ref.quizId)?.percent ?? null });
-    course.quizzes = [...combined.values()].map(q => ({ ...(!detailed || attemptsOnly ? old?.quizzes.find(prior => prior.quizId === q.quizId) : null), ...q, courseId: course.courseId,
+    course.quizzes = [...combined.values()].map(q => ({ ...old?.quizzes.find(prior => prior.quizId === q.quizId), ...q, courseId: course.courseId,
       url: `${moodle.origin}/mod/quiz/view.php?id=${q.quizId}`, status: gradeStatus(q.percent), checked: false }));
     course.status = course.gradeError || course.discoveryError ? 'partial' : 'ready';
     course.summary = courseSummary(course.quizzes);
@@ -84,6 +84,7 @@ export async function scanOverview(moodle, store, { concurrency = 6, onProgress 
       quiz.detailCheckedAt = new Date().toISOString();
       if (quiz.percent === null && !quiz.attempts && !view.reviews.length && !quiz.activeAttempt) quiz.status = 'unattempted';
       if (!attemptsOnly) {
+        delete quiz.reviewError;
         let latest;
         const imported = new Set(previous?.courses.find(c => c.courseId === course.courseId)?.quizzes.find(q => q.quizId === quiz.quizId)?.importedReviews || []);
         quiz.importedReviews = [...imported];
