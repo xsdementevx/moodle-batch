@@ -2,7 +2,7 @@ import { readFile, access, writeFile, rename } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { answerSignature, isExcludedAnswer } from './answers.js';
 import { cookieState, openParser } from './moodle.js';
-import { checkpointed, selectContext } from './solve.js';
+import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } from './solve.js';
 import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
 import { verifyEvidence, sourceText } from './evidence.js';
@@ -30,7 +30,7 @@ export function webPrompt(questions, context, requestId) {
     + 'Не смешивай разные классификации: сначала сравни полный перечень в материале текущего курса; если он отсутствует или неоднозначен, проверь содержательные источники и явно учти расхождения. '
     + 'Нельзя дополнять основной перечень элементами из другой классификации: практический компонент, направленность поведения или готовность действовать не равнозначны самим действиям. Для включения варианта нужна цитата, называющая именно его структурным компонентом в применяемой классификации. '
     + 'В matching порядок отображения строк не задаёт последовательность: ориентируйся на текст и номер каждой строки. Для хронологии назначай события номерам строк по датам, даже если строки показаны в порядке 4, 3, 1, 2. '
-    + 'confidence от 0 до 1 — оценка уверенности после проверки. Если уверенность ниже 0.85 или источник не подтверждает именно выбранный ответ, needsReview=true. '
+    + `confidence от 0 до 1 — оценка уверенности после проверки. Если уверенность ниже ${MIN_WEB_CONFIDENCE} или источник не подтверждает именно выбранный ответ, needsReview=true. `
     + 'Для каждого ответа добавь evidence: {"kind":"context","contextId":"ID материала","quote":"точная цитата"} '
     + 'или {"kind":"web","url":"точный URL из поиска","quote":"точная цитата со страницы"}. '
     + 'Если весь ответ требует нескольких цитат, evidence может быть массивом этих объектов. Для matching добавь каждому объекту rowIds: массив ID строк, которые подтверждает цитата; вместе покрой все строки. Для multiple добавь optionIds: массив выбранных ID, которые подтверждает цитата; вместе покрой весь выбранный набор. Каждая цитата должна быть точной и проверяемой. '
@@ -75,7 +75,7 @@ export function parseWeb(text, questions, requestId, citations) {
     const sourceUrls = item.sourceUrls.filter(url => sourceKey(url) && observed.has(sourceKey(url)));
     if (Object.hasOwn(item, 'confidence') && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) throw new Error('INVALID_WEB_RESPONSE');
     const confidence = item.confidence === undefined ? {} : { confidence: item.confidence };
-    if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < 0.85)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
+    if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < MIN_WEB_CONFIDENCE)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
       ...confidence, ...review, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
     // Validate the model's type before applying the legacy short-answer rules.
     answerSignature(q, item.answer);
@@ -330,7 +330,7 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }
         }
-        return cached.result.answers.map(answer => ({ ...answer,
+        return cached.result.answers.map(answer => ({ ...reviewConfidence(answer),
         ...(cached.result.conversationUrl ? { conversationUrl: cached.result.conversationUrl } : {}),
         ...(cached.result.reasoning ? { reasoning: cached.result.reasoning } : {}) }));
       }

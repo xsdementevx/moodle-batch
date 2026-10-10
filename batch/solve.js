@@ -6,6 +6,10 @@ import { answerSignature, digest, questionKey, isExcludedAnswer } from './answer
 
 const run = promisify(execFile);
 const MODEL = 'jev-1.13.0';
+export const MIN_WEB_CONFIDENCE = 0.90;
+export const reviewConfidence = answer => answer.status === 'candidate' && Number.isFinite(answer.confidence)
+  && answer.confidence < MIN_WEB_CONFIDENCE
+  ? { ...answer, status: 'needs_review', evidenceVerified: false, reviewReason: 'model_uncertain' } : answer;
 
 export function selectContext(text, questions, limit = 48000) {
   if (text.length <= limit) return text;
@@ -186,7 +190,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
       for (const q of unresolved) {
         const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
-        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && a.status === 'candidate' && a.evidenceVerified === true);
+        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true);
         if (answer) {
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true }); }
           catch { /* a malformed old result never becomes a reusable answer */ }
@@ -230,7 +234,8 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });
       let results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
         questionIds: batch.map(identity), bindings: bindings(batch) });
-      const accept = result => {
+      const accept = answer => {
+        const result = reviewConfidence(answer);
         const prior = jevAnswers.get(result.slot), q = batch.find(q => q.slot === result.slot);
         decisions.set(result.slot, prior && result.status === 'candidate' && answerSignature(q, prior.answer) === answerSignature(q, result.answer)
           ? { ...result, provider: 'jev', verifiedBy: 'gpt_web' } : result);

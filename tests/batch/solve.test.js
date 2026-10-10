@@ -53,6 +53,10 @@ test('uncertain Web responses preserve diagnostics but remain unverified', async
   assert.equal(verified[0].status, 'needs_review');
   assert.equal(verified[0].evidenceVerified, false);
   assert.equal(verified[0].reviewReason, 'model_uncertain');
+  for (const [confidence, status] of [[0.86, 'needs_review'], [0.899, 'needs_review'], [0.90, 'candidate']]) {
+    assert.equal(parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence,
+      needsReview: false, sourceUrls: [evidence.url], evidence }] }), [question], 'nonce', [evidence.url])[0].status, status);
+  }
 });
 import { closeExtensionTabs } from '../../batch/extension.js';
 import { chromium } from 'playwright';
@@ -411,6 +415,28 @@ test('verified cached answers survive regrouping but changed wording, context or
       await solveTest([changed], material, { journalDir: dir, web: async batch => { called = true; return batch.map(q => ({ slot: q.slot, answer: [options[1].id], status: 'candidate' })); } });
       assert.equal(called, true);
     }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('borderline completed answers cannot bypass Medium and High clarification through the verified cache', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-confidence-'));
+  const question = q('20:30:1'), context = { status: 'missing', text: '', contextHash: null };
+  const savedAnswer = { slot: question.slot, status: 'candidate', answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true, confidence: 0.86 };
+  try {
+    const journalPath = join(dir, `${'c'.repeat(64)}.json`);
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', bindings: [{ slot: question.slot, fingerprint: questionFingerprint(question, context) }], result: { answers: [savedAnswer] } }));
+    const cachedWeb = webSolver({ extension: true, connect: () => assert.fail('completed request must not be resent') });
+    const [old] = await cachedWeb([question], context, { journalPath });
+    assert.equal(old.status, 'needs_review'); assert.equal(old.evidenceVerified, false);
+    await cachedWeb.close();
+    const efforts = [];
+    const [solved] = await solveTest([question], context, { journalDir: dir, web: async (batch, _, opts) => {
+      efforts.push(opts.reasoning);
+      return batch.map(q => ({ ...savedAnswer, slot: q.slot, confidence: opts.reasoning === 'high' ? 0.95 : 0.86 }));
+    } });
+    assert.deepEqual(efforts, ['instant', 'medium', 'high']);
+    assert.equal(solved.decision.status, 'candidate'); assert.equal(solved.decision.confidence, 0.95);
+    assert.equal(solved.decision.cached, undefined);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
