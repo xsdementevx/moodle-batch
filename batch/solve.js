@@ -220,6 +220,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
   const remaining = unresolved.filter(q => !decisions.has(q.slot) || decisions.get(q.slot).provider === 'jev')
     .map(q => decisions.get(q.slot)?.provider === 'jev' ? { ...q, previousUnverifiedAnswer: decisions.get(q.slot).answer } : q);
   if (remaining.length && web) {
+    const packets = [];
     for (const batch of questionPackets(remaining, context)) {
       check();
       const scoped = packetContext(context, batch, 80000);
@@ -232,7 +233,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         ...(q.memory.matchingRows ? [q.memory.matchingRows] : []), ...(q.memory.multipleOptions ? [q.memory.multipleOptions] : [])]), scoped.contextHash]);
       const jevAnswers = new Map(batch.filter(q => decisions.get(q.slot)?.provider === 'jev').map(q => [q.slot, decisions.get(q.slot)]));
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });
-      let results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
+      const results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
         questionIds: batch.map(identity), bindings: bindings(batch) });
       const accept = answer => {
         const result = reviewConfidence(answer);
@@ -242,6 +243,12 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       };
       for (const result of results) accept(result);
       await notify();
+      packets.push({ batch, scoped, id, results, accept });
+    }
+    // Give every independent context its first answer before spending time on clarification.
+    for (const packet of packets) {
+      const { batch, scoped, id, accept } = packet;
+      let { results } = packet;
       const reviewQuestion = q => {
         const decision = decisions.get(q.slot);
         return { ...q, previousUnverifiedAnswer: decision.answer, reviewReason: decision.reviewReason,

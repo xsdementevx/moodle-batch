@@ -418,6 +418,35 @@ test('verified cached answers survive regrouping but changed wording, context or
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('independent context packets get Instant answers before clarification and retain their own conversation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-instant-first-'));
+  const context = { documents: { first: { status: 'missing', text: 'Alpha '.repeat(10000), contextHash: 'first' },
+    second: { status: 'missing', text: 'Beta '.repeat(12000), contextHash: 'second' } } };
+  const questions = [q('20:30:1', { contextId: 'first', text: 'Alpha question?' }),
+    q('21:31:1', { contextId: 'second', quizId: '21', attemptId: '31', text: 'Beta question?' })];
+  const calls = [], ready = new Set();
+  const web = (batch, material, opts) => checkpointed(opts.journalPath, async () => {
+    assert.equal(batch.length, 1);
+    const question = batch[0];
+    calls.push(`${opts.reasoning}:${question.contextId}`);
+    assert.deepEqual(Object.keys(material.documents), [question.contextId]);
+    if (opts.reasoning !== 'instant') assert.equal(opts.continueUrl, 'https://chatgpt.com/c/first', 'another packet must not switch the clarification chat');
+    return { answers: [{ slot: question.slot, provider: 'gpt_web', answer: [options[0].id], evidenceVerified: true,
+      status: question.contextId === 'first' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate',
+      conversationUrl: `https://chatgpt.com/c/${question.contextId}` }] };
+  }, opts.questionIds, opts.bindings).then(result => result.answers);
+  try {
+    const result = await solveTest(questions, context, { journalDir: dir, web, onAnswers: answers => {
+      for (const q of answers) if (q.decision?.status === 'candidate' && !ready.has(q.contextId)) {
+        ready.add(q.contextId); calls.push(`ready:${q.contextId}`);
+      }
+    } });
+    assert.deepEqual(calls, ['instant:first', 'instant:second', 'ready:second', 'medium:first', 'high:first', 'ready:first']);
+    assert.ok(result.every(q => q.decision.status === 'candidate'));
+    await solveTest(questions, context, { journalDir: dir, web: () => assert.fail('completed answers must be reused') });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('borderline completed answers cannot bypass Medium and High clarification through the verified cache', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-confidence-'));
   const question = q('20:30:1'), context = { status: 'missing', text: '', contextHash: null };
