@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 import { loadContext } from './context.js';
 import { solveTest, pendingModelTests } from './solve.js';
-import { startTest, startId, submitTest, submissionId } from './submit.js';
+import { startTest, startId, submitTest, submissionId, rememberAttemptStart } from './submit.js';
 
 export async function prepareQuiz(moodle, store, quizId, { root, progress = async () => {}, stopped = () => false,
-  contextLoader = loadContext } = {}) {
+  contextLoader = loadContext, now = Date.now } = {}) {
   const check = () => { if (stopped()) throw new Error('STOPPED'); };
   check();
   await progress('reading');
@@ -35,6 +35,8 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
   const test = await moodle.collect(started.attemptUrl);
   validate(test);
   if (test.kind !== 'attempt' || !test.complete) throw new Error('ACTIVE_COMPLETE_ATTEMPT_REQUIRED');
+  test.attemptTiming = await rememberAttemptStart(test, join(root, 'operations', `${submissionId(test)}.json.timing`),
+    join(root, 'operations', `${startId(view)}.json`), now);
   await progress('context', { attemptId: test.attemptId, total: test.questions.length });
   const questions = test.questions.map(q => ({ ...q, memory: store.lookup(q) }));
   const context = questions.some(q => q.memory.status === 'unresolved')
@@ -45,7 +47,8 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
   return { test, view, context, questions };
 }
 
-export async function finishQuiz(moodle, store, prepared, questions, { root, progress = async () => {}, stopped = () => false } = {}) {
+export async function finishQuiz(moodle, store, prepared, questions, { root, secondsPerQuestion = 0,
+  progress = async () => {}, stopped = () => false, now, sleep } = {}) {
   const { test, view } = prepared;
   const quizId = test.quizId;
   if (stopped()) throw new Error('STOPPED');
@@ -53,8 +56,8 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, pro
     if (page.origin !== moodle.origin || page.userScope !== moodle.userScope || page.quizId !== quizId
       || page.courseId !== view.courseId) throw new Error('PAGE_SCOPE_MISMATCH');
   };
-  await progress('submitting');
-  const submission = await submitTest(moodle, test, questions, join(root, 'operations', `${submissionId(test)}.json`));
+  const submission = await submitTest(moodle, test, questions, join(root, 'operations', `${submissionId(test)}.json`),
+    { secondsPerQuestion, progress, stopped, now, sleep });
   // Once submitted, always recover the review even when Stop arrives.
   await progress('verifying');
   const review = await moodle.collect(submission.reviewUrl);
@@ -72,6 +75,7 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, pro
   const attemptUsage = usage ? { ...usage, used, remaining: usage.allowed !== null && used !== null ? Math.max(0, usage.allowed - used) : null } : null;
   return { quizId, courseId: view.courseId, attemptId: test.attemptId, reviewUrl: submission.reviewUrl, grade, percent, gradePercent, attemptUsage,
     total: review.questions.length, correct: review.questions.filter(q => q.feedback === 'correct').length,
+    ...(submission.timing ? { timing: submission.timing } : {}),
     sources: questions.map(q => ({ slot: q.slot, provider: q.decision?.provider,
       ...(q.decision?.cached ? { cached: true } : {}),
       ...(q.decision?.reasoning ? { reasoning: q.decision.reasoning } : {}),
@@ -104,7 +108,8 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
     if (options.stopped?.()) break;
     try {
       const p = await prepareQuiz(moodle, store, quizId, { ...options, progress: (stage, detail) => progress(quizId, stage, detail) });
-      if (p.questions.every(q => q.memory.status === 'known')) {
+      const readyAt = p.test.attemptTiming.startedAt + (options.secondsPerQuestion || 0) * p.questions.length * 1000;
+      if (p.questions.every(q => q.memory.status === 'known') && readyAt <= (options.now || Date.now)()) {
         await finish(p, await solveTest(p.questions, p.context, { stopped: options.stopped }));
       } else prepared.push(p);
     }
@@ -129,6 +134,9 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
     for (const p of eligible) await failed(p.test.quizId, error);
     return results;
   }
+  // Open and solve the whole packet before waiting; finish shorter/older attempts first.
+  const byReadyTime = p => p.test.attemptTiming.startedAt + (options.secondsPerQuestion || 0) * p.questions.length * 1000;
+  if (options.secondsPerQuestion) eligible.sort((a, b) => byReadyTime(a) - byReadyTime(b));
   for (const p of eligible) {
     const quizId = p.test.quizId;
     const native = solved.filter(q => q.quizId === quizId).map(({ nativeSlot, contextId, ...q }) => ({ ...q, slot: nativeSlot }));

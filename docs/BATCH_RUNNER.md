@@ -29,8 +29,13 @@ npm run batch -- --quiz MODULE_ID --attempt ATTEMPT_ID
 
 Параметры: `--origin`, `--auth`, `--db`, `--report`, `--context`, `--solve`,
 `--gpt-auth`, `--gpt-profile`, `--gpt-browser`, `--gpt-extension`, `--gpt-visible`,
-`--prepare-submit`, `--submit`, `--start`.
+`--prepare-submit`, `--submit`, `--start`, `--seconds-per-question`.
 Справка: `npm run batch -- --help`.
+
+При отправке `--seconds-per-question` задаёт минимум секунд на вопрос с начала
+отдельной попытки: по умолчанию 10, 0 отключает ожидание. Время чтения и решения
+входит в этот интервал. Отметка начала сохраняется; если Moodle скрывает начало
+ранее вручную открытой попытки, используется её первое обнаружение сервисом.
 
 По умолчанию авторизация берётся из `.playwright-mcp/reference-auth/cookies.json`.
 Поддерживаются массив cookies из экспорта браузера и Playwright storageState.

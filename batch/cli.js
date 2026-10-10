@@ -6,7 +6,7 @@ import { openMoodle } from './moodle.js';
 import { loadContext } from './context.js';
 import { solveTest } from './solve.js';
 import { webSolver } from './web.js';
-import { buildSubmission, submitTest, submissionId, startTest, startId } from './submit.js';
+import { buildSubmission, submitTest, submissionId, startTest, startId, rememberAttemptStart } from './submit.js';
 
 const { values } = parseArgs({ options: {
   quiz: { type: 'string', multiple: true },
@@ -20,6 +20,7 @@ const { values } = parseArgs({ options: {
   solve: { type: 'boolean' },
   'prepare-submit': { type: 'boolean' },
   submit: { type: 'boolean' },
+  'seconds-per-question': { type: 'string', default: '10' },
   start: { type: 'boolean' },
   'gpt-auth': { type: 'string', default: '.playwright-mcp/reference-auth/cookies_gpt.json' },
   'gpt-profile': { type: 'string', default: '.playwright-mcp/batch/gpt-profile' },
@@ -36,12 +37,15 @@ if (values.help || !values.quiz?.length) {
     + '--gpt-extension: подключиться через установленное Playwright Extension; --gpt-browser: путь браузера\n'
     + '--prepare-submit: проверить итоговый запрос без отправки; --submit: завершить существующую активную попытку и импортировать результат\n'
     + '--start: начать новую попытку, если активной нет (можно сочетать с --solve и --submit)\n'
+    + '--seconds-per-question: минимум секунд на вопрос с начала попытки (10 по умолчанию; 0 без ожидания)\n'
     + 'Читает существующие попытки и импортирует результаты. Если активной попытки нет, показывает последнюю завершённую.');
 } else {
   let moodle;
   let store;
   let web;
   try {
+    const secondsPerQuestion = Number(values['seconds-per-question']);
+    if (!Number.isInteger(secondsPerQuestion) || secondsPerQuestion < 0 || secondsPerQuestion > 600) throw new Error('INVALID_MINIMUM_TIME');
     if (values.quiz.some(id => !/^\d+$/u.test(id)) || (values.attempt && (!/^\d+$/u.test(values.attempt) || values.quiz.length !== 1 || values.start))) throw new Error('INVALID_IDS');
     moodle = await openMoodle({ authFile: resolve(values.auth), origin: values.origin });
     store = openAnswers(resolve(values.db));
@@ -71,6 +75,9 @@ if (values.help || !values.quiz?.length) {
         continue;
       }
       if (test.quizId !== quizId || test.userScope !== view.userScope || test.courseId !== view.courseId) throw new Error('PAGE_SCOPE_MISMATCH');
+      if (values.submit && test.kind === 'attempt') await rememberAttemptStart(test,
+        join(resolve('.playwright-mcp/batch/operations'), `${submissionId(test)}.json.timing`),
+        join(resolve('.playwright-mcp/batch/operations'), `${startId(view)}.json`));
       let questions = test.questions.map(question => ({ ...question, memory: store.lookup(question) }));
       const context = values.context || values.solve ? await loadContext(moodle, view, resolve('.playwright-mcp/batch/materials')) : null;
       let solveError = null;
@@ -92,8 +99,12 @@ if (values.help || !values.quiz?.length) {
           submission = { state: 'prepared', questionCount: questions.length, url: plan.url };
           if (values.submit) {
             const result = await submitTest(moodle, test, questions,
-              join(resolve('.playwright-mcp/batch/operations'), `${submissionId(test)}.json`));
-            submission = { ...submission, state: 'submitted', reviewUrl: result.reviewUrl };
+              join(resolve('.playwright-mcp/batch/operations'), `${submissionId(test)}.json`), {
+                secondsPerQuestion, progress: async (stage, detail) => {
+                  if (stage === 'waiting') console.log(`Тест ${quizId}: жду минимальное время, до отправки ${Math.max(0, Math.ceil((detail.readyAt - Date.now()) / 1000))} сек.`);
+                },
+              });
+            submission = { ...submission, state: 'submitted', reviewUrl: result.reviewUrl, timing: result.timing };
             const review = await moodle.collect(result.reviewUrl);
             if (review.kind !== 'review' || review.attemptId !== test.attemptId || review.quizId !== test.quizId
                 || review.userScope !== test.userScope || review.courseId !== test.courseId) throw new Error('PAGE_SCOPE_MISMATCH');

@@ -75,12 +75,75 @@ test('Stop prevents later retries; restart marks running jobs interrupted withou
 });
 
 test('preparation skips material requests when all questions are confirmed in memory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'batch-prepare-'));
   const view = { ...scope, reviews: [], activeUrl: `${scope.origin}/mod/quiz/attempt.php?attempt=30&cmid=20` };
   const moodle = { ...scope, read: async () => view, collect: async () => ({ ...scope, kind: 'attempt', complete: true, questions: [{ ...scope, slot: '1' }] }) };
   const store = { lookup: () => ({ status: 'known', answer: ['synthetic'] }) };
-  const prepared = await prepareQuiz(moodle, store, '20', { root: '.', contextLoader: () => assert.fail('confirmed answers must not download materials') });
-  assert.equal(prepared.context.reason, 'NO_UNRESOLVED_QUESTIONS');
-  assert.equal(prepared.questions[0].memory.status, 'known');
+  try {
+    const prepared = await prepareQuiz(moodle, store, '20', { root, contextLoader: () => assert.fail('confirmed answers must not download materials') });
+    assert.equal(prepared.context.reason, 'NO_UNRESOLVED_QUESTIONS');
+    assert.equal(prepared.questions[0].memory.status, 'known');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('service persists minimum time and protects the original setting across request retries', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'batch-time-setting-'));
+  let service, release;
+  const gate = new Promise(done => { release = done; });
+  const timedInput = { ...input, maxAttempts: 1, secondsPerQuestion: 10 };
+  try {
+    service = await openService({ ...deps(root), runner: async (m, s, id, options) => {
+      assert.equal(options.secondsPerQuestion, 10);
+      await options.progress('waiting', { quizId: id, startedAt: 1_000_000, readyAt: 1_200_000, minimumSeconds: 200 });
+      await gate; return { quizId: id, percent: 100 };
+    } });
+    for (const value of [-1, 601, 1.5, '10', null]) {
+      await assert.rejects(service.start({ ...timedInput, secondsPerQuestion: value }), /INVALID_JOB/);
+    }
+    const job = await service.start(timedInput);
+    assert.equal(job.secondsPerQuestion, 10);
+    assert.equal((await service.start(timedInput)).requestId, job.requestId);
+    await assert.rejects(service.start({ ...timedInput, secondsPerQuestion: 20 }), /REQUEST_ID_CONFLICT/);
+    release(); await waitDone(service);
+    await service.close(); // Await the final durable rename before reading the file on Windows.
+    assert.equal(JSON.parse(await readFile(join(root, 'jobs.json'), 'utf8')).jobs[0].secondsPerQuestion, 10);
+    assert.equal(service.state().jobs[0].events.find(e => e.stage === 'waiting').minimumSeconds, 200);
+  } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('batch opens all known attempts before waiting and submits each at its own minimum', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'batch-timed-packet-'));
+  let clock = 1_000_000;
+  const read = [], submitted = [];
+  const attempts = ['20', '21'].map((quizId, i) => {
+    const attemptId = String(30 + i);
+    const questions = Array.from({ length: i ? 1 : 2 }, (_, j) => ({ ...scope, quizId, attemptId, slot: String(j + 1),
+      type: 'choice', text: `Question ${j + 1}`, rows: [], behaviour: 'deferredfeedback',
+      sequenceFieldName: `q100:${j + 1}_:sequencecheck`, sequenceValue: '1',
+      options: ['A', 'B'].map((text, k) => ({ id: optionId(text), text, fieldName: `q100:${j + 1}_answer`, value: String(k) })) }));
+    return { ...scope, quizId, attemptId, kind: 'attempt', complete: true, questions,
+      sourceUrl: `${scope.origin}/mod/quiz/attempt.php?attempt=${attemptId}&cmid=${quizId}`,
+      submissionForms: [{ method: 'post', action: `${scope.origin}/mod/quiz/processattempt.php`, sesskey: 'synthetic', slots: questions.map(q => q.slot) }] };
+  });
+  const moodle = { ...scope,
+    read: async url => { const q = attempts.find(q => url.endsWith(`id=${q.quizId}`)); read.push(q.quizId); return { ...q, kind: 'view', reviews: [], activeUrl: q.sourceUrl }; },
+    collect: async url => {
+      const q = attempts.find(q => new URL(url).searchParams.get('attempt') === q.attemptId);
+      return url.includes('review.php') ? { ...q, kind: 'review', resultSummary: [{ label: 'Оценка', value: '100%' }], questions: q.questions.map(q => ({ ...q, feedback: 'correct' })) } : q;
+    },
+    grades: async () => attempts.map(q => ({ quizId: q.quizId, percent: 100 })),
+    postSubmission: async plan => { submitted.push({ quiz: plan.fields.cmid, at: clock }); return { reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=${plan.fields.attempt}&cmid=${plan.fields.cmid}` }; },
+  };
+  const store = { lookup: () => ({ status: 'known', answer: [optionId('A')], excludedAnswers: [] }), importReview() {} };
+  try {
+    const results = await runQuizzes(moodle, store, ['20', '21'], { root, secondsPerQuestion: 10, now: () => clock,
+      contextLoader: () => assert.fail('known questions require no context'),
+      sleep: async ms => { assert.deepEqual(read, ['20', '21'], 'one wait must not delay opening the next attempt'); clock += ms; },
+    });
+    assert.deepEqual(submitted, [{ quiz: '21', at: 1_010_000 }, { quiz: '20', at: 1_020_000 }]);
+    assert.ok(results.every(q => q.result.percent === 100));
+    assert.deepEqual(results.map(q => q.result.timing.elapsedSeconds), [10, 20]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('real runner keeps native submission, checks Stop and records model attribution with Moodle feedback', async () => {
@@ -243,13 +306,18 @@ test('installed extension recovers a lost start reply after reopening without ch
     await dashboard.locator('.quiz').waitFor();
     assert.equal(await dashboard.locator('.quiz input').isChecked(), true);
     assert.equal(await dashboard.locator('img').count(), 0);
+    assert.equal(await dashboard.locator('#seconds-per-question').inputValue(), '10');
+    await dashboard.locator('#seconds-per-question').fill('12');
+    await dashboard.locator('#seconds-per-question').dispatchEvent('change');
     await dashboard.locator('#run').click();
     await dashboard.getByRole('button', { name: 'Проверить сохранённый запуск (1)', exact: true }).waitFor();
     assert.equal(await dashboard.locator('#rounds').isDisabled(), true);
+    assert.equal(await dashboard.locator('#seconds-per-question').isDisabled(), true);
     assert.equal(await dashboard.locator('.quiz input').isDisabled(), true);
     const saved = await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob')).pendingJob);
     assert.deepEqual(saved.quizIds, ['20']);
     assert.equal(saved.requestId, service.state().jobs[0].requestId);
+    assert.equal(saved.secondsPerQuestion, 12);
     assert.equal(lostReply, true);
     dropReplies = false;
     await waitDone(service);
@@ -258,6 +326,7 @@ test('installed extension recovers a lost start reply after reopening without ch
     const reopened = await context.newPage();
     await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=42`);
     await reopened.locator('#job-title').filter({ hasText: 'Запуск завершён' }).waitFor();
+    assert.equal(await reopened.locator('#seconds-per-question').inputValue(), '12');
     await reopened.locator('#nav-logs').click();
     assert.equal(await reopened.locator('#logs-view').isVisible(), true);
     assert.equal(await reopened.locator('.events li').count(), 3);
@@ -265,6 +334,7 @@ test('installed extension recovers a lost start reply after reopening without ch
     await reopened.locator('#copy-report').click();
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Moodle Batch — отчёт запуска/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Тест 20/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Минимальное время на вопрос: 12 сек\./);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
     await reopened.getByText('Проверка каждого вопроса Moodle', { exact: true }).click();
     assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);
@@ -338,11 +408,24 @@ test('installed extension recovers a lost start reply after reopening without ch
     await reopened.getByText('Другой запуск уже выполняется.', { exact: true }).waitFor();
     assert.deepEqual(directIntent.quizIds, ['21'], 'row action must ignore all other selected tests');
     assert.equal(directIntent.maxAttempts, 1);
+    assert.equal(directIntent.secondsPerQuestion, 12);
     assert.equal(calls, 1);
     service.start = start;
     await reopened.locator('#nav-tests').click();
     assert.equal(await reopened.locator('.quiz').count(), 3);
     assert.equal(await page.locator('#responseform input').inputValue(), 'unchanged');
+    service.state = () => {
+      const state = structuredClone(readState());
+      state.jobs[0].status = 'running';
+      state.jobs[0].current = { stage: 'waiting', quizId: '20', round: 1, total: 20, minimumSeconds: 200,
+        startedAt: Date.now() - 100000, readyAt: Date.now() + 100000, timingSource: 'first_seen' };
+      return state;
+    };
+    await reopened.reload();
+    await reopened.getByRole('heading', { name: 'Жду минимальное время попытки', exact: true }).waitFor();
+    assert.match(await reopened.locator('#job-detail').textContent(), /минимум 3 мин\. 20 сек\..*прошло.*осталось.*первого обнаружения/u);
+    assert.equal(await reopened.locator('#seconds-per-question').isDisabled(), true);
+    service.state = readState;
   } finally { await context?.close(); if (server) await new Promise(done => server.close(done)); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });
 

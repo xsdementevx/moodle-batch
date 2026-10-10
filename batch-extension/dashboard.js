@@ -4,6 +4,7 @@ const preset = params.get('quiz');
 const $ = id => document.getElementById(id);
 const selected = new Set(preset ? [preset] : []);
 const cacheKey = `overview:${userScope}`;
+const timingKey = `secondsPerQuestion:${userScope}`;
 let current, connected = false, pending = false, timer, submitting = false, initial = true, pendingIntent = null;
 let issuesOnly = location.hash === '#issues';
 const api = async (route, body) => {
@@ -15,7 +16,7 @@ const api = async (route, body) => {
 };
 const busy = () => current?.jobs.find(job => ['queued', 'running'].includes(job.status));
 const belowMaximum = quiz => Number.isFinite(quiz.percent) && quiz.percent >= 0 && quiz.percent < 100;
-const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
+const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', waiting: 'Жду минимальное время попытки', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
 const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на компьютере.', USER_SCOPE_MISMATCH: 'Аккаунт Moodle отличается от аккаунта сервиса.',
   LOGIN_REQUIRED: 'Сессия Moodle истекла. Войдите в Moodle, обновите cookies.json и нажмите «Обновить анализ». Показаны сохранённые оценки.',
   PAIRING_REQUIRED: 'Обновите расширение из папки, подготовленной сервисом.', UNKNOWN_MODEL_OUTCOME: 'Есть незавершённый сохранённый запрос модели для этого теста. Повторная отправка заблокирована; остальные тесты могут решаться.',
@@ -26,8 +27,11 @@ const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на ко
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
 errors.GPT_WEB_CONVERSATION_UNAVAILABLE = 'Сохранённая беседа ChatGPT недоступна (404). Проверьте аккаунт и наличие чата. Повторный запрос не отправляется.';
 errors.GPT_WEB_CONVERSATION_ACCESS_DENIED = 'ChatGPT не разрешил прочитать беседу. Проверьте вход в тот же аккаунт в браузере.';
+errors.INVALID_ATTEMPT_TIME = 'Сохранённая отметка времени попытки повреждена или относится к другой попытке. Отправка остановлена.';
+errors.INVALID_MINIMUM_TIME = 'Укажите целое число от 0 до 600 секунд на вопрос.';
 const node = (tag, text, className) => { const el = document.createElement(tag); if (text !== undefined) el.textContent = text; if (className) el.className = className; return el; };
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+const duration = seconds => `${Math.floor(Math.max(0, Math.ceil(seconds)) / 60)} мин. ${Math.max(0, Math.ceil(seconds)) % 60} сек.`;
 const effortLabel = { Instant: 'Лёгкое размышление', Medium: 'Среднее размышление', High: 'Высокое размышление', instant: 'Лёгкое размышление', medium: 'Среднее размышление', high: 'Высокое размышление' };
 const jobLabel = job => job.status === 'running' ? job.stopRequested ? 'Останавливается' : stages[job.current?.stage] || 'Выполняется' : job.status === 'complete' && job.results.some(q => q.error) ? 'Завершён с ошибками' : ({ queued: 'Запуск принят', stopped: 'Остановлено', interrupted: 'Запуск прерван', complete: 'Запуск завершён' }[job.status] || job.status);
 function notice(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error', error); }
@@ -57,6 +61,7 @@ function buttons() {
   $('run').disabled = submitting || Boolean(busy()) || !connected || !current || current.authRequired || !selected.size;
   $('run').textContent = pendingIntent ? `Проверить сохранённый запуск (${pendingIntent.quizIds.length})` : `Решить и отправить выбранные (${selected.size})`;
   for (const id of ['select', 'clear', 'rounds']) $(id).disabled = locked;
+  $('seconds-per-question').disabled = locked || Boolean(busy());
   for (const control of $('courses').querySelectorAll('input[type=checkbox],.course-select')) control.disabled = locked;
   for (const control of $('courses').querySelectorAll('.quiz-action')) control.disabled = locked || Boolean(busy()) || !connected || current?.authRequired || control.dataset.exhausted === 'true';
   $('stop').disabled = !busy() || busy().stopRequested;
@@ -76,6 +81,9 @@ function showProgress() {
   $('job-badge').classList.toggle('active', ['queued', 'running'].includes(job.status));
   const detail = job.current;
   $('job-detail').textContent = detail ? [detail.quizId ? `Тест ${detail.quizId}` : `Пакет из ${detail.tests || job.quizIds.length} тестов`, `Попытка ${detail.round || 1} из ${job.maxAttempts}`, detail.provider, effortLabel[detail.reasoning] || detail.reasoning, detail.questions ? `${detail.questions} вопросов` : ''].filter(Boolean).join(' · ') : `Выбрано ${job.quizIds.length} тестов · ${time(job.finishedAt || job.createdAt)}`;
+  if (job.status === 'running' && detail?.stage === 'waiting') {
+    $('job-detail').textContent += ` · минимум ${duration(detail.minimumSeconds)} · прошло ${duration((Date.now() - detail.startedAt) / 1000)} · осталось ${duration((detail.readyAt - Date.now()) / 1000)}${detail.timingSource === 'first_seen' ? ' · отсчёт с первого обнаружения' : ''}`;
+  }
   const processed = job.results.filter(q => q.attempts.length || q.error).length;
   $('job-progress').max = job.quizIds.length; $('job-progress').value = processed;
   $('job-count').textContent = `Результат получен: ${processed} из ${job.quizIds.length} тестов`;
@@ -87,6 +95,7 @@ function eventText(event) {
   if (event.kind === 'stop') return 'Запрошена остановка после текущего действия';
   if (event.kind === 'stopped') return 'Запуск остановлен';
   if (event.kind === 'complete') return 'Запуск завершён';
+  if (event.stage === 'waiting') return `Тест ${event.quizId}: ожидание до ${time(new Date(event.readyAt).toISOString())} · минимум ${duration(event.minimumSeconds)}${event.timingSource === 'first_seen' ? ' · с первого обнаружения' : ''}`;
   return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.round ? `попытка ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : ''].filter(Boolean).join(' · ');
 }
 let jobsSignature = '';
@@ -98,6 +107,7 @@ function sourceSummary(attempt) {
 function reportFor(job) {
   if (!job) return '';
   const lines = ['Moodle Batch — отчёт запуска', `Запуск: ${job.requestId}`, `Начало: ${time(job.createdAt)}`, `Статус: ${jobLabel(job)}`, `Тесты: ${job.quizIds.join(', ')}`, `Попыток на тест: ${job.maxAttempts}`, '', 'РЕЗУЛЬТАТЫ'];
+  lines.splice(lines.length - 2, 0, `Минимальное время на вопрос: ${job.secondsPerQuestion ?? 0} сек.`);
   if (job.error) lines.push(`Ошибка запуска: ${job.error} — ${errors[job.error] || job.error}`);
   for (const result of job.results) {
     const last = result.attempts.at(-1);
@@ -105,6 +115,7 @@ function reportFor(job) {
     for (const question of result.unresolvedQuestions || []) lines.push(`  ${reviewDetail(question)}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
+      if (attempt.timing) lines.push(`  Время до отправки: ${duration(attempt.timing.elapsedSeconds)}; минимум: ${duration(attempt.timing.minimumSeconds)}; начало отсчёта: ${time(new Date(attempt.timing.startedAt).toISOString())}${attempt.timing.source === 'first_seen' ? ' (первое обнаружение)' : ''}`);
       for (const source of attempt.sources || []) {
         lines.push(`    Вопрос ${source.slot}: ${source.provider || 'провайдер не указан'}; ${source.cached ? 'сохранённый ответ; ' : ''}${source.reasoning ? `${source.reasoning}; ` : ''}Moodle: ${feedbackLabel(source.feedback)}`);
         for (const option of source.options || []) lines.push(`      ${option.text}: ${feedbackLabel(option.feedback)}`);
@@ -316,12 +327,13 @@ $('refresh').addEventListener('click', async () => { try { await api('refresh');
 $('stop').addEventListener('click', async () => { try { await api('stop', { requestId: busy().requestId }); await load(); } catch (error) { notice(errors[error.message] || error.message, true); } });
 async function startRun(quizIds, maxAttempts) {
   if (submitting || busy() || !connected || current?.authRequired || !quizIds.length) return;
+  if (!pendingIntent && !$('seconds-per-question').reportValidity()) return;
   submitting = true; buttons();
   try {
     // Preserve the exact intent across a lost HTTP reply; retries use the same requestId.
     let intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
     if (intent && intent.userScope !== userScope) throw new Error('USER_SCOPE_MISMATCH');
-    intent ||= { requestId: crypto.randomUUID(), userScope, quizIds, maxAttempts };
+    intent ||= { requestId: crypto.randomUUID(), userScope, quizIds, maxAttempts, secondsPerQuestion: Number($('seconds-per-question').value) };
     pendingIntent = intent;
     await chrome.storage.local.set({ pendingJob: intent });
     await api('jobs', intent); await chrome.storage.local.remove('pendingJob'); pendingIntent = null; await load();
@@ -332,10 +344,16 @@ async function startRun(quizIds, maxAttempts) {
   finally { submitting = false; buttons(); }
 }
 $('run').addEventListener('click', () => startRun([...selected], Number($('rounds').value)));
+$('seconds-per-question').addEventListener('change', async () => {
+  if ($('seconds-per-question').checkValidity()) await chrome.storage.local.set({ [timingKey]: Number($('seconds-per-question').value) });
+});
 (async () => {
+  const seconds = (await chrome.storage.local.get(timingKey))[timingKey];
+  if (Number.isInteger(seconds) && seconds >= 0 && seconds <= 600) $('seconds-per-question').value = String(seconds);
   const intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
   if (intent?.userScope === userScope) {
     pendingIntent = intent; selected.clear(); intent.quizIds.forEach(id => selected.add(id)); $('rounds').value = String(intent.maxAttempts);
+    $('seconds-per-question').value = String(intent.secondsPerQuestion ?? 0);
   }
   const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
   if (cached) { try { render(cached, true); } catch { /* another account cache */ } }

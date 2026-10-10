@@ -1,4 +1,5 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { digest, questionKey, isExcludedAnswer } from './answers.js';
 import { checkpointed } from './solve.js';
 
@@ -20,7 +21,8 @@ export function buildStart(view) {
 export async function startTest(moodle, view, journalPath) {
   if (view.activeUrl) return { attemptUrl: view.activeUrl };
   const plan = buildStart(view);
-  try { return await checkpointed(journalPath, () => moodle.postStart(plan)); }
+  try { return await checkpointed(journalPath, async () => ({ ...await moodle.postStart(plan), startedAt: Date.now(),
+    timingSource: view.activeAttempt ? 'first_seen' : 'recorded_start' })); }
   catch (error) {
     if (error.message === 'UNKNOWN_MODEL_OUTCOME') throw new Error('UNKNOWN_START_OUTCOME');
     throw error;
@@ -82,13 +84,59 @@ export function buildSubmission(test, questions) {
   return { url: `${test.origin}/mod/quiz/processattempt.php?cmid=${test.quizId}`, fields };
 }
 
-export async function submitTest(moodle, test, questions, journalPath) {
+export async function rememberAttemptStart(test, path, startJournalPath, now = Date.now) {
+  const scope = submissionId(test);
+  try {
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    if (saved.scope !== scope || !Number.isFinite(saved.startedAt) || saved.startedAt <= 0
+        || !['recorded_start', 'first_seen'].includes(saved.source)) throw new Error('INVALID_ATTEMPT_TIME');
+    return saved;
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  let startedAt = now(), source = 'first_seen';
+  if (startJournalPath) {
+    try {
+      const journal = JSON.parse(await readFile(startJournalPath, 'utf8'));
+      if (journal.state === 'complete' && journal.result?.attemptUrl) {
+        const url = new URL(journal.result.attemptUrl);
+        if (url.origin === test.origin && url.searchParams.get('attempt') === test.attemptId
+            && url.searchParams.get('cmid') === test.quizId) {
+          const timestamp = journal.result.startedAt ?? (await stat(startJournalPath)).mtimeMs;
+          if (Number.isFinite(timestamp) && timestamp > 0 && timestamp <= startedAt) {
+            startedAt = timestamp; source = journal.result.timingSource === 'first_seen' ? 'first_seen' : 'recorded_start';
+          }
+        }
+      }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const saved = { scope, startedAt, source };
+  await mkdir(dirname(path), { recursive: true });
+  try { await writeFile(path, JSON.stringify(saved), { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; return rememberAttemptStart(test, path, startJournalPath, now); }
+  return saved;
+}
+
+export async function submitTest(moodle, test, questions, journalPath, { secondsPerQuestion = 0,
+  progress = async () => {}, stopped = () => false, now = Date.now,
+  sleep = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
+  if (!Number.isInteger(secondsPerQuestion) || secondsPerQuestion < 0 || secondsPerQuestion > 600) throw new Error('INVALID_MINIMUM_TIME');
   // A completed POST can be followed by read-only review recovery; never resend a pending POST.
   try {
     const cached = JSON.parse(await readFile(journalPath, 'utf8'));
     if (cached.state === 'pending') throw new Error('UNKNOWN_SUBMISSION_OUTCOME');
     if (cached.state === 'complete') return cached.result;
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  buildSubmission(test, questions); // Unresolved answers must fail before any wait.
+  const recorded = await rememberAttemptStart(test, `${journalPath}.timing`, undefined, now);
+  const minimumSeconds = test.questions.length * secondsPerQuestion;
+  const readyAt = recorded.startedAt + minimumSeconds * 1000;
+  if (stopped()) throw new Error('STOPPED');
+  if (now() < readyAt) await progress('waiting', { attemptId: test.attemptId, total: test.questions.length,
+    startedAt: recorded.startedAt, readyAt, minimumSeconds, secondsPerQuestion, timingSource: recorded.source });
+  while (now() < readyAt) {
+    if (stopped()) throw new Error('STOPPED');
+    await sleep(Math.min(1000, readyAt - now()));
+  }
+  if (stopped()) throw new Error('STOPPED');
   const fresh = await moodle.collect(test.sourceUrl);
   const current = fresh.questions.map(q => {
     const solved = questions.find(old => old.slot === q.slot);
@@ -96,7 +144,13 @@ export async function submitTest(moodle, test, questions, journalPath) {
     return { ...q, decision: solved.decision, memory: solved.memory };
   });
   const plan = buildSubmission(fresh, current);
-  try { return await checkpointed(journalPath, () => moodle.postSubmission(plan)); }
+  await progress('submitting');
+  if (stopped()) throw new Error('STOPPED');
+  try { return await checkpointed(journalPath, async () => {
+    const submittedAt = now();
+    return { ...await moodle.postSubmission(plan), timing: { ...recorded, minimumSeconds, secondsPerQuestion,
+      submittedAt, elapsedSeconds: (submittedAt - recorded.startedAt) / 1000 } };
+  }); }
   catch (error) {
     if (error.message === 'UNKNOWN_MODEL_OUTCOME') throw new Error('UNKNOWN_SUBMISSION_OUTCOME');
     throw error;

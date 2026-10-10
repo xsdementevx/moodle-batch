@@ -20,7 +20,8 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   const event = (job, kind, detail = {}) => {
     const item = { at: new Date().toISOString(), kind };
     // Keep only display-safe metadata; never persist prompts, answers or credentials here.
-    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'percent', 'error']) {
+    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'percent', 'error',
+      'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource']) {
       if (detail[key] !== undefined) item[key] = detail[key];
     }
     job.events ||= [];
@@ -100,7 +101,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           if (code === 'LOGIN_REQUIRED') moodle.authRequired = true;
           await save();
         };
-        const options = { root, web, stopped: () => job.stopRequested,
+        const options = { root, web, secondsPerQuestion: job.secondsPerQuestion ?? 0, stopped: () => job.stopRequested,
           onError,
           progress: async (stage, detail = {}) => {
             job.current = { round: n + 1, stage, ...detail }; event(job, 'stage', job.current);
@@ -155,20 +156,23 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
       error: scanError, overview, jobs }; },
     refresh,
     async start(input) {
-      if (!input || Object.keys(input).sort().join(',') !== 'maxAttempts,quizIds,requestId,userScope'
+      const secondsPerQuestion = input && Object.hasOwn(input, 'secondsPerQuestion') ? input.secondsPerQuestion : 0;
+      if (!input || !['maxAttempts,quizIds,requestId,userScope', 'maxAttempts,quizIds,requestId,secondsPerQuestion,userScope'].includes(Object.keys(input).sort().join(','))
           || input.userScope !== moodle.userScope || !/^[\w-]{16,80}$/u.test(input.requestId || '')
+          || !Number.isInteger(secondsPerQuestion) || secondsPerQuestion < 0 || secondsPerQuestion > 600
           || ![1, 2, 3].includes(input.maxAttempts) || !Array.isArray(input.quizIds) || !input.quizIds.length
           || input.quizIds.length > 1000 || new Set(input.quizIds).size !== input.quizIds.length
           || input.quizIds.some(id => typeof id !== 'string' || !/^\d{1,12}$/u.test(id))) throw new Error('INVALID_JOB');
       const old = jobs.find(job => job.requestId === input.requestId);
       if (old) {
-        if (JSON.stringify(old.quizIds) !== JSON.stringify(input.quizIds) || old.maxAttempts !== input.maxAttempts) throw new Error('REQUEST_ID_CONFLICT');
+        if (JSON.stringify(old.quizIds) !== JSON.stringify(input.quizIds) || old.maxAttempts !== input.maxAttempts
+            || (old.secondsPerQuestion ?? 0) !== secondsPerQuestion) throw new Error('REQUEST_ID_CONFLICT');
         await writes;
         return old;
       }
       if (moodle.authRequired) throw new Error('LOGIN_REQUIRED');
       if (active) throw new Error('JOB_ALREADY_RUNNING');
-      const job = { ...input, status: 'queued', stopRequested: false, createdAt: new Date().toISOString(), results: [] };
+      const job = { ...input, secondsPerQuestion, status: 'queued', stopRequested: false, createdAt: new Date().toISOString(), results: [] };
       event(job, 'start');
       jobs.push(job); active = job;
       try { await save(); } catch (error) { active = null; jobs.pop(); throw error; }

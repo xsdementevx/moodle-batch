@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digest, optionId } from '../../batch/answers.js';
-import { buildSubmission, submitTest, buildStart, startTest } from '../../batch/submit.js';
+import { buildSubmission, submitTest, buildStart, startTest, rememberAttemptStart } from '../../batch/submit.js';
 import { openParser, collectTest } from '../../batch/moodle.js';
 
 function fixture() {
@@ -29,6 +29,60 @@ function fixture() {
   return { ...scope, kind: 'attempt', complete: true, sourceUrl: `${scope.origin}/mod/quiz/attempt.php?attempt=30&cmid=20`,
     questions: [choice, multiple, matching, text], submissionForms: [{ method: 'post', action: `${scope.origin}/mod/quiz/processattempt.php?cmid=20`, sesskey: 'synthetic', slots: ['1', '2', '3', '4'] }] };
 }
+
+test('minimum attempt time uses question count, recorded start, durable resume and cancellable wait', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-time-'));
+  const attempt = fixture();
+  let clock = 1_000_000, posts = 0, stopped = false;
+  const now = () => clock;
+  const events = [];
+  const moodle = { collect: async () => attempt, postSubmission: async () => {
+    posts++; assert.equal(clock, 1_040_000); return { reviewUrl: 'native-review' };
+  } };
+  const journal = join(dir, 'submit.json');
+  try {
+    const startJournal = join(dir, 'start.json');
+    await writeFile(startJournal, JSON.stringify({ state: 'complete', result: { attemptUrl: attempt.sourceUrl, startedAt: clock } }));
+    const recorded = await rememberAttemptStart(attempt, `${journal}.timing`, startJournal, now);
+    clock += 5000; // Solving time is already part of the minimum, not added afterwards.
+    assert.deepEqual(await rememberAttemptStart(attempt, `${journal}.timing`, undefined, now), recorded);
+    const result = await submitTest(moodle, attempt, attempt.questions, journal, {
+      secondsPerQuestion: 10, now, progress: (stage, detail) => events.push({ stage, ...detail }),
+      sleep: async ms => { assert.equal(posts, 0); clock += ms; },
+    });
+    assert.equal(events[0].readyAt, 1_040_000);
+    assert.equal(result.timing.minimumSeconds, 40);
+    assert.equal(result.timing.elapsedSeconds, 40);
+    assert.equal(posts, 1);
+    await submitTest(moodle, attempt, attempt.questions, journal, { secondsPerQuestion: 10, sleep: () => assert.fail('completed POST must not wait or repeat') });
+    assert.equal(posts, 1);
+    // An older attempt requires no new delay; a different attempt gets its own first observation.
+    const older = join(dir, 'older.json');
+    await rememberAttemptStart(attempt, `${older}.timing`, startJournal, now);
+    await submitTest(moodle, attempt, attempt.questions, older, { secondsPerQuestion: 10, now, sleep: () => assert.fail('old attempt is already due') });
+    assert.equal(posts, 2);
+    const resumeJournal = join(dir, 'resume.json');
+    await writeFile(resumeJournal, JSON.stringify({ state: 'complete', result: {
+      attemptUrl: attempt.sourceUrl, startedAt: 1_000_000, timingSource: 'first_seen',
+    } }));
+    assert.equal((await rememberAttemptStart(attempt, join(dir, 'resume.timing'), resumeJournal, now)).source, 'first_seen');
+    const legacyJournal = join(dir, 'legacy.json');
+    await writeFile(legacyJournal, JSON.stringify({ state: 'complete', result: { attemptUrl: attempt.sourceUrl } }));
+    const legacy = await rememberAttemptStart(attempt, join(dir, 'legacy.timing'), legacyJournal, () => Date.now() + 10000);
+    assert.equal(legacy.source, 'recorded_start');
+    assert.ok(legacy.startedAt <= Date.now());
+    const cancelled = join(dir, 'cancelled.json');
+    await assert.rejects(submitTest({ collect: () => assert.fail('cancelled wait must not refresh or POST') }, attempt, attempt.questions, cancelled, {
+      secondsPerQuestion: 10, now, stopped: () => stopped, sleep: async ms => { clock += ms; stopped = true; },
+    }), /STOPPED/);
+    await assert.rejects(submitTest(moodle, attempt, attempt.questions, join(dir, 'invalid.json'), { secondsPerQuestion: -1 }), /INVALID_MINIMUM_TIME/);
+    await assert.rejects(rememberAttemptStart({ ...attempt, attemptId: '31' }, `${journal}.timing`, undefined, now), /INVALID_ATTEMPT_TIME/);
+    const unresolved = structuredClone(attempt); unresolved.questions[0].decision = { status: 'needs_review' };
+    await assert.rejects(submitTest(moodle, unresolved, unresolved.questions, join(dir, 'unresolved.json'), {
+      secondsPerQuestion: 10, now, sleep: () => assert.fail('unresolved answer must fail without waiting'),
+    }), /UNRESOLVED_SUBMISSION/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
 test('native start is explicit, reuses active attempt and blocks preflight and repeated uncertain requests', async () => {
   const attempt = fixture();
