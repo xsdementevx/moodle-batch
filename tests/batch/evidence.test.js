@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { verifyEvidence, readRenderedSource, sourceText } from '../../batch/evidence.js';
+import { verifyEvidence, readRenderedSource, sourceText, decodeSource } from '../../batch/evidence.js';
 import { chromium } from 'playwright';
 
 test('evidence requires a real quote from the correct context or an observed and readable web source', async () => {
@@ -25,6 +25,22 @@ test('evidence requires a real quote from the correct context or an observed and
   assert.equal(unreadable.reviewReason, 'source_unavailable');
   const absent = (await verifyEvidence([decision(web)], questions, contexts, { readSource: async () => 'A readable page with different facts.', renderSource: null }))[0];
   assert.equal(absent.reviewReason, 'source_quote_not_found');
+});
+
+test('source charset preserves Cyrillic quotes with HTTP and HTML declarations and UTF-8 BOM precedence', async () => {
+  const quote = 'Признак: documented fact.';
+  const encoded = Buffer.concat([Buffer.from('cff0e8e7ede0ea', 'hex'), Buffer.from(': documented fact.')]);
+  assert.equal(decodeSource(encoded, 'text/plain; charset="windows-1251"'), quote);
+  for (const meta of ['<meta charset="windows-1251">', '<meta http-equiv="Content-Type" content="text/html; charset=windows-1251">']) {
+    const html = Buffer.concat([Buffer.from(meta + '<p>'), encoded, Buffer.from('</p>')]);
+    assert.ok(decodeSource(html).includes(quote));
+    const decision = { slot: '1', status: 'candidate', sourceUrls: ['https://source.example/'], evidence: { kind: 'web', url: 'https://source.example/', quote } };
+    const [verified] = await verifyEvidence([decision], [{ slot: '1' }], {}, { readSource: async () => decodeSource(html), renderSource: () => assert.fail('valid encoding requires no browser fallback') });
+    assert.equal(verified.evidenceVerified, true);
+  }
+  assert.equal(decodeSource(Buffer.from(quote)), quote);
+  assert.equal(decodeSource(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(quote)]), 'text/html; charset=windows-1251'), quote);
+  assert.throws(() => decodeSource(encoded, 'text/html; charset=unsupported-encoding'), /SOURCE_UNAVAILABLE/);
 });
 
 test('PDF discretionary word breaks do not invalidate quotes or merge different numbers', async () => {

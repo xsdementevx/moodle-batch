@@ -27,6 +27,14 @@ function publicAddress(address) {
     && !(a === 100 && b >= 64 && b <= 127);
 }
 
+export function decodeSource(buffer, contentType = '') {
+  const charset = buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf ? 'utf-8'
+    : contentType.match(/charset\s*=\s*["']?([\w-]+)/iu)?.[1]
+      || buffer.subarray(0, 1024).toString('latin1').match(/<meta\b[^>]*\bcharset\s*=\s*["']?([\w-]+)/iu)?.[1] || 'utf-8';
+  try { return new TextDecoder(charset).decode(buffer); }
+  catch { throw new Error('SOURCE_UNAVAILABLE'); }
+}
+
 // Public text only: no browser credentials, scripts, private addresses or unlimited downloads.
 export async function readPublicSource(href) {
   for (let redirects = 0; redirects < 4; redirects++) {
@@ -55,7 +63,7 @@ export async function readPublicSource(href) {
       const material = await extractMaterial({ buffer, mime: 'application/pdf' }, join(tmpdir(), 'moodle-batch-public-pdf'));
       return { text: material.text, lineText: material.lineText, format: 'pdf' };
     }
-    const html = buffer.toString('utf8');
+    const html = decodeSource(buffer, response.headers.get('content-type') || '');
     if (/<title[^>]*>\s*(?:check failed|just a moment|verify you are human)/iu.test(html)) throw new Error('SOURCE_UNAVAILABLE');
     return html;
   }
