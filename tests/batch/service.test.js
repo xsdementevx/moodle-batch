@@ -425,7 +425,8 @@ test('installed extension accepts a different browser account and recovers a los
     await waitDone(service);
     assert.equal(calls, 1);
     await dashboard.close();
-    service.state().jobs[0].events.push({ at: new Date().toISOString(), kind: 'stage', stage: 'solving', tests: 11, total: 55 });
+    service.state().jobs[0].events.push({ at: new Date().toISOString(), kind: 'stage', stage: 'solving', tests: 11, total: 55,
+      contextStatus: 'partial', contextTextChars: 900, contextMaterials: 2, contextReadyMaterials: 1, contextCacheHits: 1 });
     const reopened = await context.newPage();
     await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=43`);
     await reopened.locator('#job-title').filter({ hasText: 'Запуск завершён' }).waitFor();
@@ -433,11 +434,12 @@ test('installed extension accepts a different browser account and recovers a los
     await reopened.locator('#nav-logs').click();
     assert.equal(await reopened.locator('#logs-view').isVisible(), true);
     assert.equal(await reopened.locator('.events li').count(), 4);
-    await reopened.getByText('Решаю вопросы · 11 тестов · 55 всего вопросов', { exact: true }).waitFor();
+    await reopened.getByText('Решаю вопросы · 11 тестов · 55 всего вопросов · контекст partial: 1/2 материалов, 900 знаков, кэш 1', { exact: true }).waitFor();
     await reopened.evaluate(() => { navigator.clipboard.writeText = async text => { globalThis.copiedReport = text; }; });
     await reopened.locator('#copy-report').click();
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Moodle Batch — отчёт запуска/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Тест 20/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /контекст partial: 1\/2 материалов, 900 знаков, кэш 1/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Минимальное время на вопрос: 12 сек\./);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Итоговая оценка в журнале Moodle: 90%/);
     assert.equal(await reopened.getByText('В журнале Moodle: 90%', { exact: true }).isVisible(), true);

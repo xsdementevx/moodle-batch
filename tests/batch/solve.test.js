@@ -9,6 +9,16 @@ import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
 import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
 import { parseWeb, parseConversation, webPrompt, readyWeb, openWebPage, selectWebReasoning, dispatchWeb, readWebResult, verifyWebParents, webSolver } from '../../batch/web.js';
 import { verifyEvidence } from '../../batch/evidence.js';
+import { contextStats } from '../../batch/context.js';
+
+test('context telemetry reports transmitted text size, readable materials and extraction cache hits', () => {
+  assert.deepEqual(contextStats({ documents: {
+    '20': { status: 'ready', text: 'abc', materials: [{ text: 'abc', cacheHit: true }, { status: 'unreadable' }] },
+    '21': { status: 'ready', text: 'de', materials: [{ text: 'de', cacheHit: false }] },
+  } }), { contextStatus: 'ready', contextTextChars: 5, contextMaterials: 3, contextReadyMaterials: 2, contextCacheHits: 1 });
+  assert.deepEqual(contextStats({ status: 'skipped', text: '', materials: [] }),
+    { contextStatus: 'skipped', contextTextChars: 0, contextMaterials: 0, contextReadyMaterials: 0, contextCacheHits: 0 });
+});
 
 test('confirmed memory requires neither journal access nor models and leaves conflicts unresolved', async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-memory-only-'));

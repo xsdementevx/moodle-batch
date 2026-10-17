@@ -77,3 +77,14 @@ export function contextManifest(context) {
       characters: m.text?.length || 0, ...(m.reason ? { reason: m.reason } : {}) })) });
   return context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, describe(doc)])) : describe(context);
 }
+
+export function contextStats(context) {
+  const documents = Object.values(context.documents || { current: context });
+  const materials = documents.flatMap(doc => doc.materials || []);
+  const contextStatus = ['ready', 'partial', 'missing', 'skipped'].includes(context.status) ? context.status
+    : documents.every(doc => doc.status === 'ready') ? 'ready' : 'mixed';
+  return { contextStatus,
+    contextTextChars: documents.reduce((total, doc) => total + (doc.text?.length || 0), 0),
+    contextMaterials: materials.length, contextReadyMaterials: materials.filter(material => Boolean(material.text)).length,
+    contextCacheHits: materials.filter(material => material.cacheHit === true).length };
+}

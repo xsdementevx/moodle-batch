@@ -20,7 +20,8 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   const event = (job, kind, detail = {}) => {
     const item = { at: new Date().toISOString(), kind };
     // Keep only display-safe metadata; never persist prompts, answers or credentials here.
-    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'tests', 'total', 'percent', 'error',
+    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'tests', 'total', 'contextStatus', 'contextTextChars',
+      'contextMaterials', 'contextReadyMaterials', 'contextCacheHits', 'percent', 'error',
       'httpStatus', 'retryAt', 'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource']) {
       if (detail[key] !== undefined) item[key] = detail[key];
     }

@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { loadContext } from './context.js';
+import { contextStats, loadContext } from './context.js';
 import { solveTest, pendingModelTests } from './solve.js';
 import { startTest, startId, submitTest, submissionId, rememberAttemptStart } from './submit.js';
 
@@ -45,7 +45,7 @@ export async function prepareQuiz(moodle, store, quizId, { root, progress = asyn
     ? await contextLoader(moodle, view, join(root, 'materials'))
     : { status: 'skipped', reason: 'NO_UNRESOLVED_QUESTIONS', materials: [], text: '', contextHash: null };
   check();
-  await progress('solving', { context: context.status });
+  await progress('solving', contextStats(context));
   return { test, view, context, questions };
 }
 

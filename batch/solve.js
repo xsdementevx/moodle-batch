@@ -1,5 +1,5 @@
 import { reviewEvidenceSupport, evidenceText } from './evidence.js';
-import { contextManifest } from './context.js';
+import { contextManifest, contextStats } from './context.js';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -290,7 +290,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     const excerpt = scoped.text;
     if (excerpt.length < 100) continue;
     const packet = jevPacket(supportsJev, excerpt);
-    await progress('solving', { provider: 'Jev', questions: supportsJev.length, tests: new Set(supportsJev.map(q => q.quizId)).size });
+    await progress('solving', { provider: 'Jev', questions: supportsJev.length, tests: new Set(supportsJev.map(q => q.quizId)).size, ...contextStats(scoped) });
     const id = digest(['jev-packet-v1', supportsJev.map(q => [q.attemptId, q.slot, questionKey(q)]), scoped.contextHash, packet.payload]);
     const raw = await checkpointed(join(journalDir, `${id}.json`), () => jev(packet), supportsJev.map(identity), bindings(supportsJev));
     for (const [slot, answer] of parseJev(packet, raw)) decisions.set(slot, { ...answer, status: 'needs_review' });
@@ -310,7 +310,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         ...(q.textFieldSize ? [q.textFieldSize] : []),
         ...(q.memory.matchingRows ? [q.memory.matchingRows] : []), ...(q.memory.multipleOptions ? [q.memory.multipleOptions] : [])]), scoped.contextHash]);
       const jevAnswers = new Map(batch.filter(q => decisions.get(q.slot)?.provider === 'jev').map(q => [q.slot, decisions.get(q.slot)]));
-      await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });
+      await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size, ...contextStats(scoped) });
       const results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
         questionIds: batch.map(identity), bindings: bindings(batch), onWait: webWait(batch, 'Instant') });
       const accept = (answer, reasoning = 'instant') => {
@@ -362,7 +362,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           const reviewId = digest([review.some(q => q.type === 'multiple') ? 'web-escalation-v3-options' : 'web-escalation-v2-feedback', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer, q.reviewReason, q.previousEvidence, q.previousRejectedAnswer,
             ...(q.previousReviewExplanation ? [q.previousReviewExplanation] : [])])]);
           await progress('solving', { provider: 'Web', reasoning: reasoning === 'medium' ? 'Medium' : 'High', questions: review.length,
-            tests: new Set(review.map(q => q.quizId)).size });
+            tests: new Set(review.map(q => q.quizId)).size, ...contextStats(scoped) });
           results = await web(review, scoped, { requestId: reviewId, journalPath: join(journalDir, `${reviewId}.json`), reasoning,
             continueUrl: results[0]?.conversationUrl, parentRequestId: results[0]?.conversationUrl ? [...parents] : undefined,
             questionIds: review.map(identity), bindings: bindings(review), onWait: webWait(review, reasoning === 'medium' ? 'Medium' : 'High') });
