@@ -26,7 +26,8 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
       }, criteria: { supported: 'The quotes establish this whole option as an answer.',
         refuted: 'The quotes establish that this option is not an answer.',
         insufficient_context: 'Neither conclusion follows completely, or the quotes are ambiguous.' } };
-      bindings.push({ id, slot: q.slot, expected: claim.selected ? 'supported' : 'refuted' });
+      bindings.push({ id, slot: q.slot, expected: claim.selected ? 'supported' : 'refuted',
+        label: [claim.row, claim.option].filter(Boolean).join(' → ').slice(0, 120) });
     }
   }
   const payloadFor = entries => ({ model: 'jev-1.13.0', state: 'Independent assessment of quotation entailment.', questions: Object.fromEntries(entries) });
@@ -52,14 +53,22 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
     const checks = bindings.filter(b => b.slot === answer.slot);
     if (!checks.length) return answer.status === 'candidate' && answer.evidenceVerified ? { ...answer, semanticVerified: true } : answer;
     const tooLarge = checks.some(b => oversized.has(b.id));
-    const accepted = !tooLarge && checks.every(b => {
+    const failures = checks.flatMap(b => {
+      if (oversized.has(b.id)) return [];
       const a = replies[b.id], p = a?.probabilities;
-      return a?.type === 'choice' && a.choice === b.expected && Number.isFinite(a.confidence) && a.confidence >= 0.9 && a.confidence <= 1
+      const valid = a?.type === 'choice' && Object.hasOwn(specs[b.id].criteria, a.choice) && Number.isFinite(a.confidence) && a.confidence >= 0 && a.confidence <= 1
         && p && Object.keys(p).length === 3 && Object.keys(specs[b.id].criteria).every(k => Number.isFinite(p[k]) && p[k] >= 0 && p[k] <= 1)
-        && p[b.expected] >= 0.95 && Math.abs(Object.values(p).reduce((s, n) => s + n, 0) - 1) < 0.000001;
+        && Math.abs(Object.values(p).reduce((s, n) => s + n, 0) - 1) < 0.000001;
+      if (valid && a.choice === b.expected && a.confidence >= 0.9 && p[b.expected] >= 0.95) return [];
+      const reason = !valid ? 'проверяющая модель вернула некорректные оценки'
+        : a.choice === 'insufficient_context' ? 'проверяющая модель считает цитаты недостаточными или неоднозначными'
+        : a.choice !== b.expected ? `вывод проверяющей модели противоречит ${b.expected === 'supported' ? 'включению' : 'исключению'} варианта`
+        : `проверяющая модель согласна с выводом, но её оценки ниже порога (уверенность ${a.confidence}, вероятность ${p[b.expected]})`;
+      return [`«${b.label}»: ${reason}.`];
     });
+    const accepted = !tooLarge && !failures.length;
     return { ...answer, semanticVerified: accepted, ...(accepted ? {} : { status: 'needs_review', evidenceVerified: false,
       reviewReason: 'evidence_not_supportive', reviewExplanation: tooLarge ? 'Одна цитата проверки обоснований превышает лимит.'
-        : 'Независимая проверка не подтвердила, что цитаты обосновывают весь ответ, включая исключённые варианты. Найди прямое обоснование или оставь вопрос нерешённым.' }) };
+        : failures.slice(0, 2).join(' ') + ' Перепроверь указанные варианты по прямым источникам; если доказательств нет, оставь вопрос нерешённым.' }) };
   });
 }
