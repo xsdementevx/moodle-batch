@@ -1,10 +1,21 @@
 const params = new URLSearchParams(location.search);
-const userScope = globalThis.batchConfig.userScope;
+let userScope = globalThis.batchConfig.userScope;
 const preset = params.get('quiz');
 const $ = id => document.getElementById(id);
 const selected = new Set(preset ? [preset] : []);
-const cacheKey = `overview:${userScope}`;
-const timingKey = `secondsPerQuestion:${userScope}`;
+const cacheKey = () => `overview:${userScope}`;
+const timingKey = () => `secondsPerQuestion:${userScope}`;
+const intentKey = () => `pendingJob:${userScope}`;
+async function restoreIntent() {
+  const key = intentKey();
+  const saved = await chrome.storage.local.get([key, 'pendingJob']);
+  if (!saved[key] && saved.pendingJob?.userScope === userScope) {
+    await chrome.storage.local.set({ [key]: saved.pendingJob });
+    await chrome.storage.local.remove('pendingJob');
+    return saved.pendingJob;
+  }
+  return saved[key];
+}
 let current, connected = false, pending = false, timer, submitting = false, initial = true, pendingIntent = null;
 let issuesOnly = location.hash === '#issues';
 const api = async (route, body) => {
@@ -18,7 +29,9 @@ const busy = () => current?.jobs.find(job => ['queued', 'running'].includes(job.
 const belowMaximum = quiz => Number.isFinite(quiz.percent) && quiz.percent >= 0 && quiz.percent < 100;
 const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', waiting: 'Жду минимальное время попытки', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
 const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на компьютере.', USER_SCOPE_MISMATCH: 'Аккаунт Moodle отличается от аккаунта сервиса.',
-  LOGIN_REQUIRED: 'Сессия Moodle истекла. Войдите в Moodle, обновите cookies.json и нажмите «Обновить анализ». Показаны сохранённые оценки.',
+  SESSION_CHANGED: 'Аккаунт Moodle изменился. Обновите панель перед запуском.',
+  SESSION_BUSY: 'Смена сессии ожидает завершения текущего действия. Повторите обновление.',
+  LOGIN_REQUIRED: 'Войдите в Moodle в этом браузере. Расширение передаст сессию автоматически. Показаны сохранённые оценки.',
   PAIRING_REQUIRED: 'Обновите расширение из папки, подготовленной сервисом.', UNKNOWN_MODEL_OUTCOME: 'Есть незавершённый сохранённый запрос модели для этого теста. Повторная отправка заблокирована; остальные тесты могут решаться.',
   START_UNAVAILABLE: 'Moodle не предоставил форму начала попытки. Откройте тест, чтобы проверить сроки, доступ и лимит попыток.',
   UNRESOLVED_SUBMISSION: 'Есть вопросы без надёжного ответа. Отправка остановлена.', MOODLE_PREFLIGHT_REQUIRED: 'Moodle требует подтвердить начало попытки. Откройте тест и подтвердите условия, затем запустите его здесь — активная попытка будет продолжена.',
@@ -81,7 +94,12 @@ function buttons() {
 }
 function showProgress() {
   const job = busy() || current?.jobs.at(-1);
-  if (!job) return;
+  if (!job) {
+    $('job-title').textContent = 'Готов к запуску'; $('job-badge').textContent = 'Ожидание';
+    $('job-badge').classList.remove('active'); $('job-detail').textContent = '';
+    $('job-progress').value = 0; $('job-count').textContent = ''; $('job-results').replaceChildren();
+    return;
+  }
   $('job-title').textContent = jobLabel(job);
   $('job-badge').textContent = ['queued', 'running'].includes(job.status) ? 'В работе' : job.error || job.results.some(q => q.error) ? 'Есть ошибки' : 'Завершён';
   $('job-badge').classList.toggle('active', ['queued', 'running'].includes(job.status));
@@ -307,21 +325,31 @@ async function load() {
   try {
     current = await api('state');
     connected = true; $('connection').textContent = 'Сервис подключён'; $('connection-dot').classList.add('online');
-    if (current.userScope !== userScope) throw new Error('USER_SCOPE_MISMATCH');
+    if (current.userScope !== userScope) {
+      userScope = current.userScope; selected.clear(); pendingIntent = null; initial = true;
+      for (const id of ['metric-total', 'metric-max', 'metric-low', 'metric-new', 'nav-count', 'issues-count', 'metric-courses']) $(id).textContent = '—';
+      $('course-filter').replaceChildren(new Option('Все курсы', ''));
+      overviewSignature = ''; jobsSignature = ''; $('courses').replaceChildren();
+      const saved = await chrome.storage.local.get([timingKey(), intentKey()]);
+      $('seconds-per-question').value = String(saved[timingKey()] ?? 10);
+      pendingIntent = await restoreIntent() || null;
+      if (pendingIntent) { pendingIntent.quizIds.forEach(id => selected.add(id)); $('rounds').value = String(pendingIntent.maxAttempts); }
+    }
     if (initial) {
       initial = false;
-      if (!current.running && (!current.overview || Date.now() - Date.parse(current.overview.completedAt || '') > 300000)) await api('refresh');
+      if (!current.authRequired && !current.running && (!current.overview || Date.now() - Date.parse(current.overview.completedAt || '') > 300000)) await api('refresh');
     }
     if (current.overview) {
       render(current.overview);
-      if (current.overview.phase === 'complete') await chrome.storage.local.set({ [cacheKey]: current.overview });
+      if (current.overview.phase === 'complete') await chrome.storage.local.set({ [cacheKey()]: current.overview });
     }
     showJobs(); buttons();
+    if (!current.authRequired && !current.error) notice('');
     if (current.authRequired) notice(errors.LOGIN_REQUIRED, true);
     if (current.error) notice(`Анализ остановлен: ${errors[current.error] || current.error}. Нажмите «Обновить анализ».`, true);
-    const intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
+    const intent = await restoreIntent();
     if (intent?.userScope === userScope && current.jobs.some(job => job.requestId === intent.requestId)) {
-      await chrome.storage.local.remove('pendingJob'); pendingIntent = null; buttons();
+      await chrome.storage.local.remove(intentKey()); pendingIntent = null; buttons();
     }
   } catch (error) { connected = false; notice(errors[error.message] || error.message, true); $('connection').textContent = 'Нет подключения'; $('connection-dot').classList.remove('online'); $('run').disabled = true; }
   finally { pending = false; $('refresh').disabled = Boolean(current?.running); $('analyze').disabled = $('refresh').disabled; $('check-attempts').disabled = $('refresh').disabled; timer = setTimeout(load, busy() || current?.running ? 2000 : 10000); }
@@ -342,31 +370,31 @@ async function startRun(quizIds, maxAttempts) {
   submitting = true; buttons();
   try {
     // Preserve the exact intent across a lost HTTP reply; retries use the same requestId.
-    let intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
+    let intent = await restoreIntent();
     if (intent && intent.userScope !== userScope) throw new Error('USER_SCOPE_MISMATCH');
     intent ||= { requestId: crypto.randomUUID(), userScope, quizIds, maxAttempts, secondsPerQuestion: Number($('seconds-per-question').value) };
     pendingIntent = intent;
-    await chrome.storage.local.set({ pendingJob: intent });
-    await api('jobs', intent); await chrome.storage.local.remove('pendingJob'); pendingIntent = null; await load();
+    await chrome.storage.local.set({ [intentKey()]: intent });
+    await api('jobs', intent); await chrome.storage.local.remove(intentKey()); pendingIntent = null; await load();
   } catch (error) {
-    if (error.rejected) { await chrome.storage.local.remove('pendingJob'); pendingIntent = null; }
+    if (error.rejected) { await chrome.storage.local.remove(intentKey()); pendingIntent = null; }
     notice(errors[error.message] || error.message, true);
   }
   finally { submitting = false; buttons(); }
 }
 $('run').addEventListener('click', () => startRun([...selected], Number($('rounds').value)));
 $('seconds-per-question').addEventListener('change', async () => {
-  if ($('seconds-per-question').checkValidity()) await chrome.storage.local.set({ [timingKey]: Number($('seconds-per-question').value) });
+  if ($('seconds-per-question').checkValidity()) await chrome.storage.local.set({ [timingKey()]: Number($('seconds-per-question').value) });
 });
 (async () => {
-  const seconds = (await chrome.storage.local.get(timingKey))[timingKey];
+  const seconds = (await chrome.storage.local.get(timingKey()))[timingKey()];
   if (Number.isInteger(seconds) && seconds >= 0 && seconds <= 600) $('seconds-per-question').value = String(seconds);
-  const intent = (await chrome.storage.local.get('pendingJob')).pendingJob;
+  const intent = await restoreIntent();
   if (intent?.userScope === userScope) {
     pendingIntent = intent; selected.clear(); intent.quizIds.forEach(id => selected.add(id)); $('rounds').value = String(intent.maxAttempts);
     $('seconds-per-question').value = String(intent.secondsPerQuestion ?? 0);
   }
-  const cached = (await chrome.storage.local.get(cacheKey))[cacheKey];
+  const cached = (await chrome.storage.local.get(cacheKey()))[cacheKey()];
   if (cached) { try { render(cached, true); } catch { /* another account cache */ } }
   navigate(location.hash === '#logs', location.hash === '#issues');
   buttons();

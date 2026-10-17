@@ -310,10 +310,10 @@ export async function openParser() {
   }]));
 }
 
-export async function openMoodle({ authFile, origin }) {
+export async function openMoodle({ authFile, origin, cookies, persist = true }) {
   const url = new URL(origin);
   if (url.origin !== origin || url.protocol !== 'https:' || url.username || url.password) throw new Error('INVALID_ORIGIN');
-  const api = await request.newContext({ storageState: cookieState(JSON.parse(await readFile(authFile, 'utf8')), origin), timeout: 30000, maxRedirects: 0 });
+  const api = await request.newContext({ storageState: cookieState(cookies ?? JSON.parse(await readFile(authFile, 'utf8')), origin), timeout: 30000, maxRedirects: 0 });
   let parser;
   try { parser = await openParser(); } catch (error) { await api.dispose(); throw error; }
   let verifiedUserScope;
@@ -333,7 +333,7 @@ export async function openMoodle({ authFile, origin }) {
     await writeFile(temporary, JSON.stringify(state), { mode: 0o600 });
     await rename(temporary, authFile);
   };
-  try { await saveSession(); }
+  try { if (persist) await saveSession(); }
   catch (error) { await api.dispose(); await parser.close(); throw error; }
   async function read(input) {
     let target = new URL(input, origin);
@@ -383,7 +383,7 @@ export async function openMoodle({ authFile, origin }) {
     } finally { await response.dispose(); }
   }
   return {
-    origin, userScope: verifiedUserScope,
+    origin, userScope: verifiedUserScope, saveSession,
     courses() { return readGrades(); },
     grades(courseId) { return readGrades(courseId); },
     read,

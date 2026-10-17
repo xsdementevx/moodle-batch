@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { openMoodle } from './moodle.js';
+import { openMoodle, cookieState } from './moodle.js';
 
 // Keep the paired account's cached panel available while cookies need renewal.
 export async function openConnection({ authFile, origin, root, open = openMoodle }) {
@@ -13,7 +13,7 @@ export async function openConnection({ authFile, origin, root, open = openMoodle
   }
   const moodle = { origin, userScope: identity.userScope, authRequired: !client };
   const install = next => {
-    Object.assign(moodle, next, { connect, close, authRequired: false });
+    Object.assign(moodle, next, { connect, close, useSession, authRequired: false });
     client = next;
   };
   const connect = () => {
@@ -29,8 +29,20 @@ export async function openConnection({ authFile, origin, root, open = openMoodle
     })().finally(() => { connecting = null; });
     return connecting;
   };
+  const useSession = async (cookies, beforeInstall = async () => {}) => {
+    cookies = cookieState(cookies, origin);
+    await connecting;
+    const next = await open({ authFile, origin, cookies, persist: false });
+    try {
+      if (next.origin !== origin || !/^\d+$/u.test(next.userScope || '')) throw new Error('USER_SCOPE_MISMATCH');
+      await beforeInstall(next.userScope);
+      await next.saveSession();
+    } catch (error) { await next.close({ save: false }); throw error; }
+    await client?.close({ save: false });
+    install(next);
+  };
   const close = async () => { await connecting?.catch(() => {}); await client?.close({ save: !moodle.authRequired }); client = null; };
   if (client) install(client);
-  else Object.assign(moodle, { connect, close });
+  else Object.assign(moodle, { connect, close, useSession });
   return moodle;
 }

@@ -35,6 +35,7 @@ async function main() {
     // must not mark the still-running service's jobs as interrupted.
     server = serviceServer({
       state: () => { if (!service) throw new Error('SERVICE_STARTING'); return service.state(); },
+      session: cookies => service.session(cookies),
       start: input => service.start(input), stop: id => service.stop(id), refresh: options => service.refresh(options),
     }, token, port);
     await new Promise((done, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', done); });
@@ -47,7 +48,7 @@ async function main() {
     await writeFile(join(extensionDir, 'config.js'), `globalThis.batchConfig = ${JSON.stringify({ endpoint: `http://127.0.0.1:${port}`, token, origin: moodle.origin, userScope: moodle.userScope })};\n`, { mode: 0o600 });
     console.log(`Moodle Batch готов. Рабочее расширение: ${extensionDir}`);
     console.log('Загрузите эту папку в браузере один раз. Сервис должен оставаться запущенным.');
-    if (moodle.authRequired) console.log('Сессия Moodle истекла. Обновите cookies.json и нажмите «Обновить анализ» в расширении.');
+    if (moodle.authRequired) console.log('Войдите в Moodle в браузере и откройте панель расширения — сессия обновится автоматически.');
     await new Promise(done => { process.once('SIGINT', done); process.once('SIGTERM', done); });
   } finally {
     if (server?.listening) await new Promise(done => server.close(done));

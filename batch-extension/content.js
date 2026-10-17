@@ -8,7 +8,9 @@
   button.style.cssText = 'padding:10px 16px;margin:10px 0;border:0;border-radius:8px;background:#2563eb;color:white;cursor:pointer';
   (document.querySelector('#region-main') || document.body).prepend(button);
   button.addEventListener('click', async () => {
-    const result = await chrome.runtime.sendMessage({ type: 'open', quizId });
-    if (result?.error) button.textContent = 'Не удалось открыть Moodle Batch';
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'open', quizId });
+      if (result?.error) button.textContent = 'Не удалось открыть Moodle Batch';
+    } catch { button.textContent = 'Расширение обновлено — перезагрузите вкладку Moodle (F5)'; }
   });
 })();

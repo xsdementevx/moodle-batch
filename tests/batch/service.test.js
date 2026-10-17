@@ -311,7 +311,7 @@ test('service batches each round and retries only tests below maximum', async ()
   } finally { await service?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('HTTP bridge requires secret, exact loopback host, extension origin, account and explicit POST', async () => {
+test('HTTP bridge requires secret, exact loopback host, extension origin, explicit POST and authenticated session updates', async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-http-'));
   const service = await openService({ ...deps(root), runner: () => assert.fail('unauthorized dispatch') });
   const token = 'synthetic-token';
@@ -321,12 +321,21 @@ test('HTTP bridge requires secret, exact loopback host, extension origin, accoun
   try {
     assert.equal((await fetch(`${url}/state?user=42`)).status, 403);
     const headers = { Authorization: `Bearer ${token}` };
-    assert.equal((await fetch(`${url}/state?user=43`, { headers })).status, 403);
+    assert.equal((await fetch(`${url}/state?user=43`, { headers })).status, 200);
     assert.equal((await fetch(`${url}/state?user=42`, { headers: { ...headers, Origin: scope.origin } })).status, 403);
     assert.equal((await fetch(`${url}/jobs`, { headers })).status, 405);
     assert.equal((await fetch(`${url}/jobs`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{' })).status, 400);
     assert.equal((await fetch(`${url}/state?user=42`, { headers })).status, 200);
     assert.equal(service.state().overview, null, 'status polling must not start a whole-course scan');
+    let received;
+    service.session = async cookies => { received = cookies; return { userScope: '43' }; };
+    const sessionRequest = { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cookies: [{ name: 'MoodleSession', value: 'synthetic' }] }) };
+    assert.equal((await fetch(`${url}/session`, { ...sessionRequest, headers: { 'Content-Type': 'application/json' } })).status, 403);
+    assert.equal(received, undefined);
+    assert.equal((await fetch(`${url}/session`, sessionRequest)).status, 200);
+    assert.equal(received[0].value, 'synthetic');
+
   } finally { await new Promise(done => server.close(done)); await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -347,6 +356,13 @@ test('installed extension accepts a different browser account and recovers a los
     });
     await new Promise(done => server.listen(49816, '127.0.0.1', done));
     await service.refresh();
+    let sessionUpdates = 0;
+    const moodleSession = async cookies => {
+      sessionUpdates++;
+      assert.deepEqual(cookies.map(c => c.name), ['MoodleSession']);
+      assert.equal(cookies[0].value, 'synthetic-session');
+    };
+    service.session = async cookies => { await moodleSession(cookies); return { userScope: '42' }; };
     const dir = join(root, 'extension');
     await cp(new URL('../../batch-extension/', import.meta.url), dir, { recursive: true });
     await writeFile(join(dir, 'config.js'), `globalThis.batchConfig=${JSON.stringify({ token: 'synthetic-token', endpoint: 'http://127.0.0.1:49816', ...scope })};`);
@@ -356,12 +372,15 @@ test('installed extension accepts a different browser account and recovers a los
     await context.route(`${scope.origin}/**`, route => route.fulfill({ contentType: 'text/html', body: new URL(route.request().url()).pathname === '/user/profile.php'
       ? '<body id="page-user-profile"><main id="region-main"><div data-userid="43"></div></main></body>'
       : '<body><div class="usermenu"><a href="/user/profile.php">Profile</a></div><main id="region-main"><form id="responseform"><input value="unchanged"></form></main></body>' }));
+    await context.addCookies([{ name: 'MoodleSession', value: 'synthetic-session', url: scope.origin, httpOnly: true, secure: true },
+      { name: 'unrelated', value: 'must-not-transfer', url: 'https://example.org' }]);
     const page = await context.newPage(); await page.goto(`${scope.origin}/mod/quiz/view.php?id=20`);
     const opened = context.waitForEvent('page');
     await page.locator('#moodle-batch-open').click();
     const dashboard = await opened;
     await dashboard.locator('.quiz').waitFor();
     assert.equal(await dashboard.locator('.quiz input').isChecked(), true);
+    assert.equal(sessionUpdates, 1, 'browser session is synchronized automatically');
     assert.equal(await dashboard.locator('img').count(), 0);
     assert.equal(await dashboard.locator('#seconds-per-question').inputValue(), '10');
     await dashboard.locator('#seconds-per-question').fill('12');
@@ -371,7 +390,7 @@ test('installed extension accepts a different browser account and recovers a los
     assert.equal(await dashboard.locator('#rounds').isDisabled(), true);
     assert.equal(await dashboard.locator('#seconds-per-question').isDisabled(), true);
     assert.equal(await dashboard.locator('.quiz input').isDisabled(), true);
-    const saved = await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob')).pendingJob);
+    const saved = await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob:42'))['pendingJob:42']);
     assert.deepEqual(saved.quizIds, ['20']);
     assert.equal(saved.requestId, service.state().jobs[0].requestId);
     assert.equal(saved.secondsPerQuestion, 12);
@@ -420,12 +439,12 @@ test('installed extension accepts a different browser account and recovers a los
     await reopened.locator('#nav-tests').click();
     assert.equal(calls, 1);
     assert.equal(await reopened.locator('.quiz input').isChecked(), true);
-    assert.equal(await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob')).pendingJob), undefined);
+    assert.equal(await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob:42'))['pendingJob:42']), undefined);
     const start = service.start.bind(service);
     service.start = async () => { throw new Error('JOB_ALREADY_RUNNING'); };
     await reopened.locator('#run').click();
     await reopened.getByText('Другой запуск уже выполняется.', { exact: true }).waitFor();
-    assert.equal(await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob')).pendingJob), undefined,
+    assert.equal(await worker.evaluate(async () => (await chrome.storage.local.get('pendingJob:42'))['pendingJob:42']), undefined,
       'a definitive rejection must not become a stale retry intent');
     assert.equal(await reopened.locator('#rounds').isDisabled(), false);
     service.start = start;
@@ -496,6 +515,24 @@ test('installed extension accepts a different browser account and recovers a los
     assert.match(await reopened.locator('#job-detail').textContent(), /минимум 3 мин\. 20 сек\..*прошло.*осталось.*первого обнаружения/u);
     assert.equal(await reopened.locator('#seconds-per-question').isDisabled(), true);
     service.state = readState;
+    assert.equal(sessionUpdates, 1, 'unchanged browser cookies are not reimported on every poll');
+    service.session = async cookies => {
+      assert.equal(cookies[0].value, 'synthetic-session-43');
+      service.state = () => ({ ...readState(), userScope: '43', overview: { ...overview(), userScope: '43' }, jobs: [] });
+      return { userScope: '43' };
+    };
+    await context.addCookies([{ name: 'MoodleSession', value: 'synthetic-session-43', url: scope.origin, httpOnly: true, secure: true }]);
+    await reopened.reload();
+    await reopened.locator('.quiz').waitFor({ state: 'attached' });
+    await reopened.waitForFunction(() => document.getElementById('seconds-per-question').value === '10');
+    assert.equal(await reopened.locator('#seconds-per-question').inputValue(), '10', 'timing settings belong to the selected account');
+    assert.equal(await reopened.locator('#job-title').textContent(), 'Готов к запуску');
+    await reopened.locator('#select').click();
+    service.start = async intent => { directIntent = intent; throw new Error('JOB_ALREADY_RUNNING'); };
+    await reopened.locator('#run').click();
+    await reopened.getByText('Другой запуск уже выполняется.', { exact: true }).waitFor();
+    assert.equal(directIntent.userScope, '43');
+    service.state = readState; service.start = start;
   } finally { await context?.close(); if (server) await new Promise(done => server.close(done)); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });
 

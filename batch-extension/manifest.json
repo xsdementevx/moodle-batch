@@ -3,8 +3,8 @@
   "name": "Moodle Batch",
   "version": "1.0.0",
   "description": "Пакетное решение тестов, память ответов и проверка результатов Moodle.",
-  "permissions": ["storage"],
-  "host_permissions": ["http://127.0.0.1/*"],
+  "permissions": ["storage", "cookies"],
+  "host_permissions": ["http://127.0.0.1/*", "https://sdo.sibupk.su/*"],
   "background": { "service_worker": "worker.js" },
   "action": { "default_title": "Moodle Batch — тесты" },
   "content_scripts": [{

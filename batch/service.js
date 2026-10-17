@@ -15,7 +15,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   await mkdir(root, { recursive: true });
   const report = join(root, 'overview.json');
   const jobsPath = join(root, 'jobs.json');
-  let overview = null, scanTask = null, scanError = null, active = null;
+  let overview = null, scanTask = null, scanError = null, active = null, sessionTask = null;
   let jobs = [];
   const event = (job, kind, detail = {}) => {
     const item = { at: new Date().toISOString(), kind };
@@ -31,7 +31,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   };
   try {
     const saved = JSON.parse(await readFile(report, 'utf8'));
-    if (saved.schemaVersion === 1 && saved.origin === moodle.origin && saved.userScope === moodle.userScope) overview = saved;
+    if (saved?.schemaVersion === 1 && saved.origin === moodle.origin && saved.userScope === moodle.userScope) overview = saved;
   } catch (error) { if (error.code !== 'ENOENT') throw new Error('OVERVIEW_CACHE_INVALID'); }
   try {
     const saved = JSON.parse(await readFile(jobsPath, 'utf8'));
@@ -67,6 +67,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   const recentGrades = new Map();
   const refresh = ({ detailed = false, attemptsOnly = false } = {}) => {
     if (scanTask) return scanTask;
+    if (sessionTask) return sessionTask.then(() => refresh({ detailed, attemptsOnly }));
     const previous = overview;
     scanError = null;
     scanTask = Promise.resolve().then(() => moodle.connect?.()).then(() => scan(moodle, store, { previous, detailed, attemptsOnly, onProgress: next => {
@@ -157,6 +158,31 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     state() { return { origin: moodle.origin, userScope: moodle.userScope, authRequired: Boolean(moodle.authRequired), running: Boolean(scanTask),
       error: scanError, overview, jobs }; },
     refresh,
+    async session(cookies) {
+      if (sessionTask || active || scanTask) throw new Error('SESSION_BUSY');
+      sessionTask = (async () => {
+        const previousUser = moodle.userScope;
+        let savedAccount;
+        await moodle.useSession(cookies, async nextUser => {
+          if (nextUser === previousUser) return;
+          const directory = join(root, 'accounts');
+          await mkdir(directory, { recursive: true });
+          await writes; await reportWrites;
+          await atomicWrite(join(directory, `${previousUser}.json`), { overview, jobs });
+          try {
+            savedAccount = JSON.parse(await readFile(join(directory, `${nextUser}.json`), 'utf8'));
+          } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        });
+        if (previousUser !== moodle.userScope) {
+          overview = savedAccount?.overview || null; jobs = savedAccount?.jobs || [];
+          recentGrades.clear();
+          await save(); await saveReport();
+        }
+        scanError = null;
+        return { userScope: moodle.userScope };
+      })();
+      try { return await sessionTask; } finally { sessionTask = null; }
+    },
     async start(input) {
       const secondsPerQuestion = input && Object.hasOwn(input, 'secondsPerQuestion') ? input.secondsPerQuestion : 0;
       if (!input || !['maxAttempts,quizIds,requestId,userScope', 'maxAttempts,quizIds,requestId,secondsPerQuestion,userScope'].includes(Object.keys(input).sort().join(','))
@@ -174,6 +200,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
       }
       if (moodle.authRequired) throw new Error('LOGIN_REQUIRED');
       if (active) throw new Error('JOB_ALREADY_RUNNING');
+      if (sessionTask) throw new Error('SESSION_BUSY');
       const job = { ...input, secondsPerQuestion, status: 'queued', stopRequested: false, createdAt: new Date().toISOString(), results: [] };
       event(job, 'start');
       jobs.push(job); active = job;
@@ -191,7 +218,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     },
     async close() {
       if (active?.job) await this.stop(active.job.requestId);
-      await active?.task; await scanTask; await writes; await reportWrites;
+      await active?.task; await scanTask; await sessionTask?.catch(() => {}); await writes; await reportWrites;
     },
   };
 }
@@ -210,19 +237,18 @@ export function serviceServer(service, token, port) {
       if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) return reply(403, { error: 'PAIRING_REQUIRED' });
       const url = new URL(req.url, `http://127.0.0.1:${port}`);
       if (req.method === 'GET' && url.pathname === '/state') {
-        const current = service.state();
-        if (url.searchParams.get('user') !== current.userScope) return reply(403, { error: 'USER_SCOPE_MISMATCH' });
         return reply(200, service.state());
       }
       if (req.method !== 'POST') return reply(405, { error: 'POST_REQUIRED' });
-      if (!['/jobs', '/stop', '/refresh'].includes(url.pathname)) return reply(404, { error: 'NOT_FOUND' });
+      if (!['/jobs', '/stop', '/refresh', '/session'].includes(url.pathname)) return reply(404, { error: 'NOT_FOUND' });
       if (req.headers['content-type'] !== 'application/json') return reply(415, { error: 'JSON_REQUIRED' });
       let body = '';
       for await (const chunk of req) {
         body += chunk;
-        if (Buffer.byteLength(body) > 16384) return reply(413, { error: 'BODY_TOO_LARGE' });
+        if (Buffer.byteLength(body) > (url.pathname === '/session' ? 65536 : 16384)) return reply(413, { error: 'BODY_TOO_LARGE' });
       }
       let input; try { input = JSON.parse(body); } catch { return reply(400, { error: 'INVALID_JSON' }); }
+      if (url.pathname === '/session') return reply(200, await service.session(input.cookies));
       if (input.userScope !== service.state().userScope) return reply(403, { error: 'USER_SCOPE_MISMATCH' });
       if (url.pathname === '/jobs') return reply(202, await service.start(input));
       if (url.pathname === '/stop') return reply(200, await service.stop(input.requestId));
