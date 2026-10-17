@@ -59,6 +59,24 @@ test('service runs one durable job, rejects another and stops retries after veri
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('next job waits for owned Web tab cleanup after the previous result is complete', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'batch-tab-cleanup-'));
+  let service, release, cleaning;
+  const cleanup = new Promise(done => { release = done; });
+  const entered = new Promise(done => { cleaning = done; });
+  try {
+    service = await openService({ ...deps(root), runner: async () => ({ percent: 100 }),
+      web: { release: async () => { cleaning(); await cleanup; } } });
+    await service.start({ ...input, maxAttempts: 1 }); await entered;
+    assert.equal(service.state().jobs[0].status, 'complete');
+    let accepted = false;
+    const next = service.start({ ...input, maxAttempts: 1, requestId: 'after-cleanup-request-1234' }).then(job => { accepted = true; return job; });
+    await new Promise(done => setImmediate(done)); assert.equal(accepted, false);
+    release(); await next;
+    await service.close(); assert.equal(service.state().jobs.length, 2);
+  } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('Stop prevents later retries; restart marks running jobs interrupted without launching new attempts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-stop-'));
   let service, calls = 0;

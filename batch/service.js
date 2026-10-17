@@ -152,13 +152,14 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
       event(job, job.stopRequested ? 'stopped' : 'complete');
       job.finishedAt = new Date().toISOString(); await save();
     } catch (error) { job.status = 'interrupted'; job.error = safeCode(error); event(job, 'error', { error: job.error }); await save(); }
-    finally { active = null; }
+    finally { try { await web?.release?.(); } finally { active = null; } }
   };
   return {
     state() { return { origin: moodle.origin, userScope: moodle.userScope, authRequired: Boolean(moodle.authRequired), running: Boolean(scanTask),
       error: scanError, overview, jobs }; },
     refresh,
     async session(cookies) {
+      if (active?.job && terminal(active.job.status)) await active.task;
       if (sessionTask || active || scanTask) throw new Error('SESSION_BUSY');
       sessionTask = (async () => {
         const previousUser = moodle.userScope;
@@ -199,6 +200,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
         return old;
       }
       if (moodle.authRequired) throw new Error('LOGIN_REQUIRED');
+      if (active?.job && terminal(active.job.status)) await active.task;
       if (active) throw new Error('JOB_ALREADY_RUNNING');
       if (sessionTask) throw new Error('SESSION_BUSY');
       const job = { ...input, secondsPerQuestion, status: 'queued', stopRequested: false, createdAt: new Date().toISOString(), results: [] };

@@ -240,6 +240,36 @@ async function retryConversationRead(read, onWait) {
   } finally { if (waiting) await onWait?.(null); }
 }
 
+// Navigation can fail before a composer exists. Retry loading the pinned history;
+// the model request remains behind dispatchWeb's journal and parent checks.
+export async function openWebPage(page, target, onWait) {
+  return retryConversationRead(async () => {
+    let history;
+    const id = /^https:\/\/chatgpt\.com\/c\/([a-zA-Z0-9-]+)$/u.exec(target)?.[1];
+    const observe = response => {
+      const url = new URL(response.url());
+      if (id && url.origin === 'https://chatgpt.com' && response.request().method() === 'GET'
+          && [`/backend-api/conversation/${id}`, `/backend-api/conversations/${id}`].includes(url.pathname)) history = response;
+    };
+    const loaded = id && page.waitForResponse?.(response => { observe(response); return history === response; }, { timeout: 15000 }).catch(() => null);
+    try {
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      if (id && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+      await page.bringToFront?.();
+      history = await loaded || history;
+      if (history && !history.ok()) {
+        const status = history.status(), retryAfter = history.headers()['retry-after'];
+        const retryMs = retryAfter ? (/^\d+$/u.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
+        throw Object.assign(new Error(status === 429 ? 'GPT_WEB_RATE_LIMITED'
+          : status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
+          : [401, 403].includes(status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED' : 'GPT_WEB_CONVERSATION_READ_FAILED'),
+        { httpStatus: status, retryMs: Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0 });
+      }
+      await readyWeb(page);
+    } finally { await loaded; }
+  }, onWait);
+}
+
 export async function verifyWebParents(page, parents, onWait) {
   const target = page.url();
   const messages = await retryConversationRead(() => readConversationMessages(page, target), onWait);
@@ -355,7 +385,8 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
 
 export function webSolver({ authFile, profileDir, visible = false, executablePath, extension = false, connect = connectExtension }) {
   let attachment;
-  async function extensionPage() {
+  const conversations = new Map();
+  async function extensionPage(continueUrl) {
     // Recover only before dispatch. Pending journals above still forbid resending.
     for (let attempt = 0; attempt < 2; attempt++) {
       attachment ??= connect({ executablePath, profileDir });
@@ -363,7 +394,13 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
       try { browser = await attachment; }
       catch (error) { attachment = undefined; throw error; }
       const context = browser.contexts()[0];
-      if (context && browser.isConnected?.() !== false) return { browser, page: await context.newPage() };
+      if (context && browser.isConnected?.() !== false) {
+        const previous = conversations.get(continueUrl);
+        const reused = previous && !previous.isClosed() && previous.url() === continueUrl;
+        if (previous && !reused) conversations.delete(continueUrl);
+        return { browser, page: reused ? previous : await context.newPage(), reused };
+      }
+      conversations.clear();
       attachment = undefined;
       await browser.close().catch(() => {});
     }
@@ -395,17 +432,24 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
       if (cached.state === 'pending') throw new Error('UNKNOWN_MODEL_OUTCOME');
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (extension) {
-      const { browser, page } = await extensionPage();
+      const { browser, page, reused } = await extensionPage(options.continueUrl);
       let preservePage = false;
       try {
         if (options.continueUrl && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(options.continueUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-        await page.goto(options.continueUrl || 'https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-        if (options.continueUrl && page.url() !== options.continueUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
         await closeExtensionTabs(browser);
-        return await dispatchWeb(page, questions, context, options);
+        if (!reused) await openWebPage(page, options.continueUrl || 'https://chatgpt.com/', options.onWait);
+        if (options.continueUrl && page.url() !== options.continueUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+        const answers = await dispatchWeb(page, questions, context, options);
+        const url = answers[0]?.conversationUrl;
+        if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(url || '') && page.url() === url) {
+          conversations.set(url, page); preservePage = true;
+        }
+        return answers;
       } catch (error) {
+        for (const [url, owned] of conversations) if (owned === page) conversations.delete(url);
         try { preservePage = JSON.parse(await readFile(options.journalPath, 'utf8')).state === 'pending'; }
         catch { /* no dispatch journal: safe to close our unused page */ }
+        if (error.message === 'GPT_WEB_FOREIGN_DRAFT') preservePage = true;
         throw error;
       } finally {
         if (!preservePage) await page.close().catch(() => {});
@@ -422,12 +466,19 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
         : await browser.newContext({ storageState: cookieState(raw, 'https://chatgpt.com') });
       const page = await browserContext.newPage();
       if (options.continueUrl && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(options.continueUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-      await page.goto(options.continueUrl || 'https://chatgpt.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await openWebPage(page, options.continueUrl || 'https://chatgpt.com/', options.onWait);
       if (options.continueUrl && page.url() !== options.continueUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
       return await dispatchWeb(page, questions, context, options);
     } finally { await browserContext?.close(); await browser?.close(); }
   };
+  solve.release = async () => {
+    for (const [url, page] of conversations) {
+      if (!page.isClosed() && page.url() === url) await page.close().catch(() => {});
+    }
+    conversations.clear();
+  };
   solve.close = async () => {
+    await solve.release();
     if (attachment) {
       const browser = await attachment.catch(() => null);
       if (browser) await closeExtensionTabs(browser);

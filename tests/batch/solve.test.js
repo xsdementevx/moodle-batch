@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { optionId, digest, questionKey } from '../../batch/answers.js';
 import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
 import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
-import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, verifyWebParents, webSolver } from '../../batch/web.js';
+import { parseWeb, parseConversation, webPrompt, readyWeb, openWebPage, selectWebReasoning, dispatchWeb, readWebResult, verifyWebParents, webSolver } from '../../batch/web.js';
 import { verifyEvidence } from '../../batch/evidence.js';
 
 test('confirmed memory requires neither journal access nor models and leaves conflicts unresolved', async () => {
@@ -299,6 +299,36 @@ test('pinned reads honor rate limit backoff and retry temporary server failures 
   assert.ok(waits[0].retryAt > waits[1].retryAt);
   const limited = { ...page, evaluate: async () => ({ error: 'GPT_WEB_RATE_LIMITED', httpStatus: 429, retryMs: 600000 }) };
   await assert.rejects(readWebResult(limited, [q('1')], 'nonce'), /GPT_WEB_RATE_LIMITED/);
+});
+
+test('native history load backs off before dispatch when the failed page has no composer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const target = 'https://chatgpt.com/c/pinned-history', waits = [];
+  let listener, loads = 0, readyCalls = 0, firstStatus = 429;
+  const page = { waitForResponse: predicate => new Promise(resolve => { listener = response => {
+      if (predicate(response)) { listener = undefined; resolve(response); }
+    }; }),
+    url: () => target, title: async () => 'ChatGPT', bringToFront: async () => {},
+    goto: async url => {
+      assert.equal(url, target); loads++;
+      listener({ url: () => 'https://chatgpt.com/backend-api/conversations/unrelated', request: () => ({ method: () => 'GET' }),
+        ok: () => false, status: () => 404, headers: () => ({}) });
+      listener({ url: () => 'https://chatgpt.com/backend-api/conversations/pinned-history', request: () => ({ method: () => 'GET' }),
+        ok: () => loads > 1, status: () => loads === 1 ? firstStatus : 200, headers: () => ({ 'retry-after': '120' }) });
+    },
+    locator: selector => selector.startsWith('iframe') ? { count: async () => 0 }
+      : { first: () => ({ waitFor: async () => { readyCalls++; if (loads === 1) throw new Error('NO_COMPOSER'); } }) } };
+  const pending = openWebPage(page, target, detail => waits.push(detail));
+  const settle = () => new Promise(done => setImmediate(done));
+  await settle(); assert.equal(loads, 1); assert.equal(waits[0].httpStatus, 429);
+  assert.equal(listener, undefined, 'remove the listener while waiting');
+  t.mock.timers.tick(119999); await settle(); assert.equal(loads, 1);
+  t.mock.timers.tick(1); await pending;
+  assert.equal(loads, 2); assert.equal(readyCalls, 1); assert.equal(waits.at(-1), null);
+  assert.equal(listener, undefined);
+  loads = 0; firstStatus = 404;
+  await assert.rejects(openWebPage(page, target), /GPT_WEB_CONVERSATION_UNAVAILABLE/);
+  assert.equal(loads, 1, 'a missing conversation must not reload or create a new chat');
 });
 
 test('extension reconnects a missing or detached context before dispatch and never retries a pending packet', async () => {
