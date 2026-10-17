@@ -5,7 +5,7 @@ import { cookieState, openParser } from './moodle.js';
 import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } from './solve.js';
 import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
-import { verifyEvidence, sourceText } from './evidence.js';
+import { verifyEvidence, sourceText, reviewEvidenceSupport } from './evidence.js';
 
 export function webPrompt(questions, context, requestId) {
   return 'Реши вопросы теста. Используй приложенный контекст и обязательно веб-поиск. '
@@ -24,6 +24,7 @@ export function webPrompt(questions, context, requestId) {
     + 'При needsReview=true добавь reviewExplanation: одно короткое предложение до 400 символов о недостающем факте или конкретном противоречии. Для choice, если источники подтверждают несколько вариантов, явно укажи это. Не описывай ход рассуждений. '
     + 'Для каждого ответа sourceUrls должны содержать точные URL страниц из результатов твоего веб-поиска, которые подтверждают этот ответ. '
     + 'Если первый поиск не подтвердил ответ, ищи повторно другими формулировками; предпочитай первоисточник и точную формулировку учебного материала. '
+    + 'Для ответа «срок не установлен/не определён» нужна цитата, прямо подтверждающая отсутствие установленного срока именно для этого действия. Отсутствие срока в отдельном абзаце не доказывает его отсутствие в целом. Проверь порядок действий, остальные части нормы, материал курса и официальные разъяснения. Если прямого подтверждения нет, needsReview=true.\n'
     + 'Проверь отрицания, исключения, число требуемых вариантов и каждый элемент multiple/matching. При противоречиях сравни источники и контекст. '
     + 'Для choice сравни каждый предложенный вариант с источником до выбора одного ID. Проверь существенные оговорки: «в первую очередь», «только», «все», «может», «как правило», «и/или». Не превращай условное правило в безусловное и не смешивай признаки понятия с условиями применения нормы. Если несколько вариантов одинаково подтверждены и контекст не позволяет выбрать единственный, needsReview=true. '
     + 'Цитата должна подтверждать отличительный признак из вопроса, а не просто описывать выбранное понятие. Для «не входит», «не относится», «кроме» докажи исключение: назначение должностного лица другим органом или отсутствие в неполном перечне не доказывает, что оно не входит в состав. Краткий фрагмент без названного субъекта не подтверждает его статус. Не разрешай противоречие нормативного первоисточника и справочного сайта в пользу справочника без объяснения даты и области применения. '
@@ -44,6 +45,7 @@ export function webPrompt(questions, context, requestId) {
     + 'previousEvidence и previousRejectedAnswer нельзя повторять как подтверждённое решение. Найди точный источник и исправь ответ или оставь needsReview=true.\n'
     + 'source_unavailable означает, что программа не смогла прочитать источник (например, доступ закрыт или файл превышает предел). Ищи другой открытый источник; повтор той же цитаты из недоступного источника не решает проблему.\n'
     + 'evidence_incomplete означает, что в массиве цитат не покрыты все строки matching или все выбранные варианты multiple: добавь недостающие проверенные цитаты и соответствующие ID.\n'
+    + 'evidence_not_supportive означает, что цитата не доказывает выбранное утверждение. Найди прямое подтверждение именно этого факта; подлинность цитаты и высокая уверенность сами по себе недостаточны. Если его нет, needsReview=true.\n'
     + 'contextId связывает вопрос только с его материалом; контексты других тестов не применяй.\n'
     + JSON.stringify({ requestId, context: context.documents ? undefined : selectContext(context.text, questions, 100000),
       contexts: context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, doc.text])) : undefined,
@@ -365,7 +367,7 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }
         }
-        return cached.result.answers.map(answer => ({ ...reviewConfidence(answer),
+        return cached.result.answers.map(answer => ({ ...reviewEvidenceSupport(reviewConfidence(answer), questions.find(q => q.slot === answer.slot)),
         ...(cached.result.conversationUrl ? { conversationUrl: cached.result.conversationUrl } : {}),
         ...(cached.result.reasoning ? { reasoning: cached.result.reasoning } : {}) }));
       }

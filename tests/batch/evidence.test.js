@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { verifyEvidence, readRenderedSource, sourceText, decodeSource } from '../../batch/evidence.js';
+import { verifyEvidence, readRenderedSource, sourceText, decodeSource, reviewEvidenceSupport } from '../../batch/evidence.js';
 import { chromium } from 'playwright';
 
 test('evidence requires a real quote from the correct context or an observed and readable web source', async () => {
@@ -179,4 +179,21 @@ test('rendered evidence ignores table separators and line escapes while preservi
     assert.equal((await verifyEvidence([decision], [{ slot: '1' }], {}, options))[0].evidenceVerified, true);
     assert.equal((await verifyEvidence([{ ...decision, evidence: { ...decision.evidence, quote: decision.evidence.quote.replace('1234', '9999') } }], [{ slot: '1' }], {}, options))[0].status, 'needs_review');
   } finally { await browser.close(); }
+});
+
+
+test('an unspecified deadline requires an explicit source statement rather than a quote omitting timing', async () => {
+  const question = { slot: '1', type: 'choice', options: [{ id: 'unspecified', text: 'срок не определен' }] };
+  const quote = 'С приказом работодателя о прекращении трудового договора работник должен быть ознакомлен под роспись.';
+  const answer = { slot: '1', status: 'candidate', answer: ['unspecified'], confidence: 0.99, sourceUrls: ['https://source.example/'],
+    evidence: { kind: 'web', url: 'https://source.example/', quote } };
+  const [result] = await verifyEvidence([answer], [question], {}, { readSource: async () => quote });
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reviewReason, 'evidence_not_supportive');
+  assert.equal(result.evidenceVerified, false);
+  assert.equal(reviewEvidenceSupport({ ...answer, evidenceVerified: true }, question).status, 'needs_review', 'a completed cache cannot bypass the support check');
+  for (const explicit of ['Срок ознакомления с указанным приказом законодательством не определён.', 'Закон не устанавливает срок ознакомления с приказом работодателя.']) {
+    const [accepted] = await verifyEvidence([{ ...answer, evidence: { ...answer.evidence, quote: explicit } }], [question], {}, { readSource: async () => explicit });
+    assert.equal(accepted.status, 'candidate');
+  }
 });

@@ -10,6 +10,20 @@ import { join } from 'node:path';
 export const evidenceText = text => normalize(String(text).replace(/(?<=\p{L})[\u001f\u00ad](?=\p{L})/gu, '')
   .replace(/\\[nr]/gu, ' ').replace(/\s*\|\s*/gu, ' '));
 
+// Silence about a deadline does not establish that no deadline exists.
+export function reviewEvidenceSupport(decision, question) {
+  if (decision.status !== 'candidate' || !question) return decision;
+  const answer = question.type === 'choice'
+    ? question.options?.find(option => option.id === decision.answer?.[0])?.text : question.type === 'text' ? decision.answer : '';
+  const unspecified = /(?:срок|врем[яени]|период)[^.!?]{0,100}(?:не\s+(?:определ|устан(?:ов|авл)|огранич|предусмотр|регламент)|отсутств)|(?:не\s+(?:определ|устан(?:ов|авл)|огранич|предусмотр|регламент)|отсутств)[^.!?]{0,100}(?:срок|врем[яени]|период)/iu;
+  const evidence = Array.isArray(decision.evidence) ? decision.evidence : [decision.evidence];
+  if (typeof answer === 'string' && unspecified.test(answer)
+      && !evidence.some(item => unspecified.test(item?.quote || ''))) {
+    return { ...decision, status: 'needs_review', evidenceVerified: false, reviewReason: 'evidence_not_supportive' };
+  }
+  return decision;
+}
+
 // Runs inside the inert DOM parser, never as page scripts from the source.
 export function sourceText(raw) {
   const doc = new DOMParser().parseFromString(raw, 'text/html');
@@ -174,10 +188,10 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         }
       }
     }
-    results.push({ ...decision, evidenceVerified: grounded,
+    results.push(reviewEvidenceSupport({ ...decision, evidenceVerified: grounded,
       ...(grounded && rejected.length ? { evidence: verified, rejectedEvidence: rejected } : {}),
       reviewReason: grounded ? undefined : decision.reviewReason || reason,
-      status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status });
+      status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status }, question));
   }
   return results;
 }

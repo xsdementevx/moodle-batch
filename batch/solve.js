@@ -1,3 +1,4 @@
+import { reviewEvidenceSupport } from './evidence.js';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -190,7 +191,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
       for (const q of unresolved) {
         const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
-        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true
+        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true && reviewEvidenceSupport(a, q).status === 'candidate'
           && (q.type !== 'multiple' || /^(?:medium|high|Средний|Высокий)$/iu.test(a.reasoning || saved.result.reasoning || '')));
         if (answer) {
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,
@@ -238,7 +239,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       const results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
         questionIds: batch.map(identity), bindings: bindings(batch) });
       const accept = (answer, reasoning = 'instant') => {
-        let result = reviewConfidence(answer);
+        let result = reviewEvidenceSupport(reviewConfidence(answer), batch.find(q => q.slot === answer.slot));
         const prior = jevAnswers.get(result.slot), q = batch.find(q => q.slot === result.slot);
         if (q.type === 'multiple' && result.status === 'candidate' && reasoning === 'instant') {
           result = { ...result, status: 'needs_review', reviewReason: 'multiple_completeness' };

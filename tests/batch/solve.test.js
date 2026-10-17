@@ -477,6 +477,29 @@ test('verified cached answers survive regrouping but changed wording, context or
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('unsupported deadline claims cannot be accepted from fresh or regrouped cached answers', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-deadline-review-'));
+  const context = { status: 'missing', text: '', contextHash: null };
+  const choices = ['срок не определен', 'в последний день работы'].map(text => ({ id: optionId(text), text }));
+  const question = q('1', { options: choices });
+  const unsupported = { slot: '1', provider: 'gpt_web', status: 'candidate', answer: [choices[0].id], confidence: 0.99,
+    evidenceVerified: true, evidence: { kind: 'web', quote: 'Работник должен быть ознакомлен с приказом под роспись.' } };
+  try {
+    await writeFile(join(dir, `${'d'.repeat(64)}.json`), JSON.stringify({ state: 'complete',
+      bindings: [{ slot: '1', fingerprint: questionFingerprint(question, context) }], result: { answers: [unsupported] } }));
+    const efforts = [];
+    const [result] = await solveTest([question], context, { journalDir: dir, web: async (batch, material, opts) => {
+      efforts.push(opts.reasoning);
+      if (opts.reasoning === 'instant') return [unsupported];
+      assert.equal(batch[0].reviewReason, 'evidence_not_supportive');
+      assert.match(webPrompt(batch, material, opts.requestId), /evidence_not_supportive означает/);
+      return [{ ...unsupported, answer: [choices[1].id], evidence: { kind: 'web', quote: 'В день увольнения (последний день работы) ознакомьте работника с приказом под роспись.' } }];
+    } });
+    assert.deepEqual(efforts, ['instant', 'medium']);
+    assert.deepEqual(result.decision.answer, [choices[1].id]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('multiple answers check omitted options at Medium even with 99% confidence and reuse the checked result', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-multiple-review-'));
   const context = { status: 'missing', text: '', contextHash: null };
