@@ -1,5 +1,7 @@
-import { readFile, access, writeFile, rename } from 'node:fs/promises';
+import { readFile, access, writeFile, rename, appendFile, mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { dirname } from 'node:path';
+import { observeWebHistory, nativeWebHistory, clearWebHistory } from './web-history.js';
 import { answerSignature, isExcludedAnswer } from './answers.js';
 import { cookieState, openParser } from './moodle.js';
 import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } from './solve.js';
@@ -170,9 +172,11 @@ export function parseConversation(messages, questions, requestId, parentRequestI
   return parseWeb(text, questions, requestId, [...new Set(sources)]);
 }
 
-async function readConversationMessages(page, conversationUrl) {
+async function readConversationMessages(page, conversationUrl, requestId) {
   const target = new URL(conversationUrl);
   if (!/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target.href)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  const native = await nativeWebHistory(page, conversationUrl, requestId);
+  if (native) return native;
   const messages = await page.evaluate(async pathname => {
     const id = /^\/c\/([a-zA-Z0-9-]+)$/u.exec(pathname)?.[1];
     if (location.origin !== 'https://chatgpt.com' || !id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
@@ -181,7 +185,7 @@ async function readConversationMessages(page, conversationUrl) {
     const session = await sessionResponse.json();
     if (!session.accessToken) return { error: 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE' };
     const response = await fetch(`/backend-api/conversation/${encodeURIComponent(id)}`, {
-      headers: { Authorization: `Bearer ${session.accessToken}` },
+      headers: { Authorization: `Bearer ${session.accessToken}`, 'X-Moodle-Batch-Read': '1' },
     });
     if (!response.ok) {
       const retryAfter = response.headers.get('retry-after');
@@ -215,7 +219,7 @@ async function readConversationMessages(page, conversationUrl) {
 }
 
 async function readConversation(page, questions, requestId, parentRequestId, conversationUrl = page.url()) {
-  const messages = await readConversationMessages(page, conversationUrl);
+  const messages = await readConversationMessages(page, conversationUrl, requestId);
   return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl };
 }
 
@@ -242,17 +246,25 @@ async function retryConversationRead(read, onWait) {
 
 // Navigate once. Hydration must finish in this original tab, without reloads.
 export async function openWebPage(page, target, onWait) {
+  observeWebHistory(page);
+  const id = /^https:\/\/chatgpt\.com\/c\/([a-zA-Z0-9-]+)$/u.exec(target)?.[1];
+  // The composer may appear before React starts fetching the pinned history.
+  const started = id && page.waitForRequest?.(request => {
+    const url = new URL(request.url());
+    return url.origin === 'https://chatgpt.com' && request.method() === 'GET'
+      && [`/backend-api/conversation/${id}`, `/backend-api/conversations/${id}`].includes(url.pathname);
+  }, { timeout: 15000 }).catch(() => null);
   try {
     await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
   } catch (error) {
     if (error.name !== 'TimeoutError' || page.url() !== target) throw error;
   }
-  const pinned = /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target);
-  if (pinned && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  if (id && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   await onWait?.({ retryAt: Date.now() + 300000 });
   try {
     await readyWeb(page);
-    if (pinned && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+    await started;
+    if (id && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   } finally { await onWait?.(null); }
 }
 
@@ -352,6 +364,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   try { await send.waitFor({ state: 'visible', timeout: 5000 }); }
   catch { throw new Error('GPT_WEB_SEND_UNAVAILABLE'); }
   const snapshot = await checkpointed(journalPath, async () => {
+    clearWebHistory(page);
     await send.click();
     try {
       const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl, onWait);
@@ -420,6 +433,10 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
     if (extension) {
       const { browser, page, reused } = await extensionPage(options.continueUrl);
       let preservePage = false;
+      await mkdir(dirname(options.journalPath), { recursive: true });
+      observeWebHistory(page, detail => {
+        appendFile(options.journalPath + '.network.jsonl', JSON.stringify(detail) + '\n', { mode: 0o600 }).catch(() => {});
+      });
       try {
         if (options.continueUrl && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(options.continueUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
         await closeExtensionTabs(browser);
