@@ -215,6 +215,17 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
       try { return await readConversation(page, questions, requestId, parentRequestId, target); }
       catch (error) {
         if (error.message !== 'GPT_WEB_RESPONSE_NOT_READY' || Date.now() >= deadline) throw error;
+        await page.evaluate(expected => {
+          if (location.href !== expected) return;
+          const main = document.querySelector('main');
+          const containers = [...(main?.querySelectorAll('*') || [])];
+          for (let el = main; el; el = el.parentElement) containers.push(el);
+          for (const el of containers) {
+            if (el.clientHeight > 100 && el.scrollHeight > el.clientHeight
+                && !el.closest('pre,textarea,[contenteditable="true"]') && /^(auto|scroll)$/u.test(getComputedStyle(el).overflowY)) el.scrollTop = el.scrollHeight;
+          }
+        }, target).catch(() => {});
+
         await new Promise(done => setTimeout(done, 5000));
       }
     }

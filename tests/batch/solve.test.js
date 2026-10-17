@@ -248,6 +248,24 @@ test('legacy transcript scrolls itself when completion controls mount only at th
   } finally { await browser.close(); }
 });
 
+test('pending conversation follows the viewport automatically and reads the final response without sending again', async () => {
+  const url = 'https://chatgpt.com/c/owned-conversation';
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const transcript = { clientHeight: 200, scrollHeight: 1000, scrollTop: 0, closest: () => null };
+  const main = { querySelectorAll: () => [transcript], clientHeight: 0, parentElement: null };
+  let reads = 0;
+  const page = { url: () => url,
+    evaluate: async (fn, arg) => {
+      if (arg === url) return runInNewContext(`(${fn.toString()})(expected)`, { expected: arg,
+        location: { href: url }, document: { querySelector: () => main }, getComputedStyle: () => ({ overflowY: 'auto' }) });
+      reads++;
+      return [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
+        { role: 'assistant', endTurn: transcript.scrollTop > 0, text: JSON.stringify(payload) }];
+    }, locator: () => assert.fail('pending response must not resend or touch the draft') };
+  assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
+  assert.equal(transcript.scrollTop, 1000); assert.equal(reads, 2);
+});
+
 test('unavailable conversation and access errors stop the pinned read without retry or sending', async () => {
   for (const code of ['GPT_WEB_CONVERSATION_UNAVAILABLE', 'GPT_WEB_CONVERSATION_ACCESS_DENIED', 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE']) {
     let reads = 0;
