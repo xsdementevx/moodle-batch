@@ -176,13 +176,14 @@ test('completed evidence arrays are rechecked after a reader upgrade but model u
   const quote = 'The exact verified course statement provides the answer.';
   const evidence = [{ kind: 'context', quote, optionIds: ['one'] }];
   const answers = [
-    { slot: '1', type: 'multiple', answer: ['one'], status: 'needs_review', reviewReason: 'source_quote_not_found', sourceUrls: [], evidence },
+    { slot: '1', type: 'multiple', answer: ['one'], status: 'needs_review', reviewReason: 'source_quote_not_found', sourceUrls: [], evidence,
+      optionChecks: ['one', 'two'].map(id => ({ optionId: id, selected: id === 'one', reason: 'Verified against the course statement.', evidence: evidence[0] })) },
     { slot: '2', answer: ['one'], status: 'needs_review', reviewReason: 'model_uncertain', sourceUrls: [], evidence },
   ];
   try {
     await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 3, answers } }));
     const solve = webSolver({ extension: true, connect: () => assert.fail('rechecking evidence must not dispatch to ChatGPT') });
-    const result = await solve([{ slot: '1', type: 'multiple' }, { slot: '2' }], { text: quote }, { journalPath });
+    const result = await solve([{ slot: '1', type: 'multiple', options: [{ id: 'one' }, { id: 'two' }] }, { slot: '2' }], { text: quote }, { journalPath });
     assert.equal(result[0].evidenceVerified, true);
     assert.equal(result[0].status, 'candidate');
     assert.equal(result[0].reviewReason, undefined);
@@ -246,7 +247,8 @@ test('legacy completed transcript can be read without scrolling', async () => {
   } finally { await browser.close(); }
 });
 
-test('pending conversation reads the final response without viewport, copy controls or another send', async () => {
+test('pending conversation backs off before reading the final response without scrolling or another send', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const url = 'https://chatgpt.com/c/owned-conversation';
   const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
   let reads = 0;
@@ -257,7 +259,12 @@ test('pending conversation reads the final response without viewport, copy contr
       return [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
         { role: 'assistant', endTurn: reads === 2, text: JSON.stringify(payload) }];
     }, locator: () => assert.fail('pending response must not touch the transcript or draft') };
-  assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
+  const pending = readWebResult(page, [q('1')], 'nonce');
+  await new Promise(done => setImmediate(done));
+  t.mock.timers.tick(29999); await new Promise(done => setImmediate(done));
+  assert.equal(reads, 1, 'no five-second polling during a delayed save');
+  t.mock.timers.tick(1);
+  assert.equal((await pending).answers[0].status, 'candidate');
   assert.equal(reads, 2);
 });
 
@@ -572,6 +579,8 @@ test('multiple answers check omitted options at Medium even with 99% confidence 
     return { reasoning: opts.reasoning === 'medium' ? 'Средний' : 'Instant', answers: batch.map(q => ({ slot: q.slot,
       provider: 'gpt_web', status: 'candidate', confidence: 0.99, evidenceVerified: true,
       answer: q.type === 'multiple' && opts.reasoning === 'medium' ? options.map(o => o.id) : [options[0].id],
+      ...(q.type === 'multiple' && opts.reasoning === 'medium' ? { optionsVerified: true,
+        optionChecks: options.map(o => ({ optionId: o.id, selected: true, reason: 'The source explicitly includes this option.' })) } : {}),
       conversationUrl: 'https://chatgpt.com/c/multiple' })) };
   }, opts.questionIds, opts.bindings).then(result => result.answers);
   try {

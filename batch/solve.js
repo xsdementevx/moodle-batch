@@ -278,7 +278,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         for (const reasoning of ['medium', 'high']) {
           if (!review.length) break;
           check();
-          const reviewId = digest(['web-escalation-v2-feedback', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer, q.reviewReason, q.previousEvidence, q.previousRejectedAnswer,
+          const reviewId = digest([review.some(q => q.type === 'multiple') ? 'web-escalation-v3-options' : 'web-escalation-v2-feedback', id, reasoning, review.map(q => [q.slot, q.previousUnverifiedAnswer, q.reviewReason, q.previousEvidence, q.previousRejectedAnswer,
             ...(q.previousReviewExplanation ? [q.previousReviewExplanation] : [])])]);
           await progress('solving', { provider: 'Web', reasoning: reasoning === 'medium' ? 'Medium' : 'High', questions: review.length,
             tests: new Set(review.map(q => q.quizId)).size });

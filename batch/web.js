@@ -1,7 +1,7 @@
 import { readFile, access, writeFile, rename, appendFile, mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { dirname } from 'node:path';
-import { observeWebHistory, nativeWebHistory, clearWebHistory } from './web-history.js';
+import { observeWebHistory, nativeWebHistory, clearWebHistory, waitForWebGeneration, rememberWebRead, checkWebReadLimit } from './web-history.js';
 import { answerSignature, isExcludedAnswer } from './answers.js';
 import { cookieState, openParser } from './moodle.js';
 import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } from './solve.js';
@@ -31,6 +31,7 @@ export function webPrompt(questions, context, requestId) {
     + 'Для choice сравни каждый предложенный вариант с источником до выбора одного ID. Проверь существенные оговорки: «в первую очередь», «только», «все», «может», «как правило», «и/или». Не превращай условное правило в безусловное и не смешивай признаки понятия с условиями применения нормы. Если несколько вариантов одинаково подтверждены и контекст не позволяет выбрать единственный, needsReview=true. '
     + 'Цитата должна подтверждать отличительный признак из вопроса, а не просто описывать выбранное понятие. Для «не входит», «не относится», «кроме» докажи исключение: назначение должностного лица другим органом или отсутствие в неполном перечне не доказывает, что оно не входит в состав. Краткий фрагмент без названного субъекта не подтверждает его статус. Не разрешай противоречие нормативного первоисточника и справочного сайта в пользу справочника без объяснения даты и области применения. '
     + 'Для multiple проверь все предложенные варианты, включая невыбранные: наличие доказательства одного варианта не означает полноту набора. Если цитата перечисляет несколько подходящих вариантов, учти каждый из них. '
+    + 'Для multiple обязательно optionChecks: массив ровно по одному объекту для КАЖДОГО варианта, включая невыбранные: {"optionId":"ID","selected":true,"reason":"почему выбрать или исключить именно в данной формулировке","evidence":{"kind":"context","contextId":"ID","quote":"точная цитата"}}. evidence может быть web с url; все URL включи в sourceUrls. selected=false тоже требует цитаты, обосновывающей исключение; отсутствие варианта в неполном перечне не является доказательством. Для отрицательного вопроса selected означает выбор ответа именно на этот вопрос. Если вариант не определён, selected=null и needsReview=true. Для варианта, явно подтверждённого multipleMemory, достаточно правильного selected и reason со ссылкой на проверку Moodle. '
     + 'Не смешивай разные классификации: сначала сравни полный перечень в материале текущего курса; если он отсутствует или неоднозначен, проверь содержательные источники и явно учти расхождения. '
     + 'Нельзя дополнять основной перечень элементами из другой классификации: практический компонент, направленность поведения или готовность действовать не равнозначны самим действиям. Для включения варианта нужна цитата, называющая именно его структурным компонентом в применяемой классификации. '
     + 'В matching порядок отображения строк не задаёт последовательность: ориентируйся на текст и номер каждой строки. Для хронологии назначай события номерам строк по датам, даже если строки показаны в порядке 4, 3, 1, 2. '
@@ -80,8 +81,9 @@ export function parseWeb(text, questions, requestId, citations) {
     const sourceUrls = item.sourceUrls.filter(url => sourceKey(url) && observed.has(sourceKey(url)));
     if (Object.hasOwn(item, 'confidence') && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) throw new Error('INVALID_WEB_RESPONSE');
     const confidence = item.confidence === undefined ? {} : { confidence: item.confidence };
+    const optionChecks = q.type === 'multiple' && Array.isArray(item.optionChecks) ? { optionChecks: item.optionChecks } : {};
     if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < MIN_WEB_CONFIDENCE)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
-      ...confidence, ...review, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
+      ...confidence, ...review, ...optionChecks, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
     // Validate the model's type before applying the legacy short-answer rules.
     answerSignature(q, item.answer);
     const answer = q.type === 'text' && q.textFormat !== 'numerical'
@@ -90,7 +92,7 @@ export function parseWeb(text, questions, requestId, citations) {
       slot: q.slot, provider: 'gpt_web', answer: null, rejectedAnswer: answer, status: 'needs_review',
       reviewReason: 'excluded_answer', sourceUrls, ...confidence, verifiedByMoodle: false };
     return { slot: q.slot, provider: 'gpt_web', answer, ...(answer !== item.answer ? { rawAnswer: item.answer } : {}),
-      status: sourceUrls.length || item.evidence?.kind === 'context' ? 'candidate' : 'needs_review', ...confidence,
+      status: sourceUrls.length || (Array.isArray(item.evidence) ? item.evidence : [item.evidence]).some(e => e?.kind === 'context') ? 'candidate' : 'needs_review', ...confidence, ...optionChecks,
       ...(item.evidence ? { evidence: item.evidence } : {}), sourceUrls, searchObserved: citations.length > 0, verifiedByMoodle: false };
   });
 }
@@ -175,47 +177,51 @@ export function parseConversation(messages, questions, requestId, parentRequestI
 async function readConversationMessages(page, conversationUrl, requestId) {
   const target = new URL(conversationUrl);
   if (!/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target.href)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-  const native = await nativeWebHistory(page, conversationUrl, requestId);
-  if (native) return native;
-  const messages = await page.evaluate(async pathname => {
-    const id = /^\/c\/([a-zA-Z0-9-]+)$/u.exec(pathname)?.[1];
-    if (location.origin !== 'https://chatgpt.com' || !id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-    const sessionResponse = await fetch('/api/auth/session');
-    if (!sessionResponse.ok) return { error: 'GPT_WEB_SESSION_READ_FAILED' };
-    const session = await sessionResponse.json();
-    if (!session.accessToken) return { error: 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE' };
-    const response = await fetch(`/backend-api/conversation/${encodeURIComponent(id)}`, {
-      headers: { Authorization: `Bearer ${session.accessToken}`, 'X-Moodle-Batch-Read': '1' },
-    });
-    if (!response.ok) {
-      const retryAfter = response.headers.get('retry-after');
-      const retryMs = retryAfter ? (/^\d+$/u.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
-      return { error: response.status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
-        : [401, 403].includes(response.status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED'
-        : response.status === 429 ? 'GPT_WEB_RATE_LIMITED' : 'GPT_WEB_CONVERSATION_READ_FAILED',
-      httpStatus: response.status, retryMs: Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0 };
-    }
-    const data = await response.json();
-    if (data.id && data.id !== id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-    const messages = [];
-    const seen = new Set();
-    let node = data.mapping?.[data.current_node];
-    while (node) {
-      if (seen.has(node.id) || seen.size >= 100) throw new Error('GPT_WEB_INVALID_CONVERSATION');
-      seen.add(node.id);
-      const m = node.message;
-      if (m) messages.unshift({ role: m.author?.role, toolName: m.author?.name, endTurn: m.end_turn,
-        text: m.content?.content_type === 'text' && (m.author?.role === 'user' || m.end_turn)
-          ? m.content.parts.filter(p => typeof p === 'string').join('\n') : undefined,
-        sources: m.author?.role === 'tool' && m.author?.name === 'web.run'
-          ? (m.metadata?.search_result_groups || []).flatMap(g => (g.entries || []).map(e => e.url)) : [],
+  await waitForWebGeneration(page);
+  return rememberWebRead(page, conversationUrl, async () => {
+    const native = await nativeWebHistory(page, conversationUrl, requestId);
+    if (native) return native;
+    checkWebReadLimit(page);
+    const messages = await page.evaluate(async pathname => {
+      const id = /^\/c\/([a-zA-Z0-9-]+)$/u.exec(pathname)?.[1];
+      if (location.origin !== 'https://chatgpt.com' || !id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+      const sessionResponse = await fetch('/api/auth/session');
+      if (!sessionResponse.ok) return { error: 'GPT_WEB_SESSION_READ_FAILED' };
+      const session = await sessionResponse.json();
+      if (!session.accessToken) return { error: 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE' };
+      const response = await fetch(`/backend-api/conversation/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${session.accessToken}`, 'X-Moodle-Batch-Read': '1' },
       });
-      node = data.mapping?.[node.parent];
-    }
+      if (!response.ok) {
+        const retryAfter = response.headers.get('retry-after');
+        const retryMs = retryAfter ? (/^\d+$/u.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
+        return { error: response.status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
+          : [401, 403].includes(response.status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED'
+          : response.status === 429 ? 'GPT_WEB_RATE_LIMITED' : 'GPT_WEB_CONVERSATION_READ_FAILED',
+        httpStatus: response.status, retryMs: Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0 };
+      }
+      const data = await response.json();
+      if (data.id && data.id !== id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+      const messages = [];
+      const seen = new Set();
+      let node = data.mapping?.[data.current_node];
+      while (node) {
+        if (seen.has(node.id) || seen.size >= 100) throw new Error('GPT_WEB_INVALID_CONVERSATION');
+        seen.add(node.id);
+        const m = node.message;
+        if (m) messages.unshift({ role: m.author?.role, toolName: m.author?.name, endTurn: m.end_turn,
+          text: m.content?.content_type === 'text' && (m.author?.role === 'user' || m.end_turn)
+            ? m.content.parts.filter(p => typeof p === 'string').join('\n') : undefined,
+          sources: m.author?.role === 'tool' && m.author?.name === 'web.run'
+            ? (m.metadata?.search_result_groups || []).flatMap(g => (g.entries || []).map(e => e.url)) : [],
+        });
+        node = data.mapping?.[node.parent];
+      }
+      return messages;
+    }, target.pathname);
+    if (messages.error) throw Object.assign(new Error(messages.error), { httpStatus: messages.httpStatus, retryMs: messages.retryMs });
     return messages;
-  }, target.pathname);
-  if (messages.error) throw Object.assign(new Error(messages.error), { httpStatus: messages.httpStatus, retryMs: messages.retryMs });
-  return messages;
+  });
 }
 
 async function readConversation(page, questions, requestId, parentRequestId, conversationUrl = page.url()) {
@@ -224,7 +230,7 @@ async function readConversation(page, questions, requestId, parentRequestId, con
 }
 
 async function retryConversationRead(read, onWait) {
-  let waiting = false;
+  let waiting = false, incompleteReads = 0;
   try {
     const deadline = Date.now() + 300000;
     while (true) {
@@ -232,7 +238,9 @@ async function retryConversationRead(read, onWait) {
       catch (error) {
         const retryable = error.message === 'GPT_WEB_RESPONSE_NOT_READY' || error.httpStatus === 429
           || [500, 502, 503, 504].includes(error.httpStatus);
-        const delay = Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
+        const delay = error.message === 'GPT_WEB_RESPONSE_NOT_READY'
+          ? Math.min(120000, 30000 * 2 ** incompleteReads++)
+          : Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
         if (!retryable || Date.now() + delay > deadline) throw error;
         if (error.httpStatus) {
           waiting = true;
@@ -367,6 +375,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
     clearWebHistory(page);
     await send.click();
     try {
+      await waitForWebGeneration(page);
       const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl, onWait);
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),

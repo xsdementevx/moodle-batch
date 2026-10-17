@@ -90,6 +90,10 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, sec
       ...(q.decision?.evidenceVerified ? { evidence: (Array.isArray(q.decision.evidence) ? q.decision.evidence : [q.decision.evidence])
         .filter(e => ['context', 'web'].includes(e?.kind) && typeof e.quote === 'string')
         .map(e => ({ kind: e.kind, quote: e.quote, ...(e.kind === 'web' ? { url: e.url } : {}) })) } : {}),
+      ...(q.decision?.optionsVerified && Array.isArray(q.decision.optionChecks) ? { optionChecks: q.decision.optionChecks.map(check => ({
+        text: q.options.find(option => option.id === check.optionId)?.text, selected: check.selected, reason: check.reason,
+        ...(check.evidence ? { evidence: { kind: check.evidence.kind, quote: check.evidence.quote,
+          ...(check.evidence.kind === 'web' ? { url: check.evidence.url } : {}) } } : {}) })) } : {}),
       feedback: native?.feedback,
       ...(q.type === 'multiple' ? { options: native?.options.filter(o => o.selected).map(o => ({ text: o.text, feedback: o.feedback })) || [] } : {}) };
     }) };

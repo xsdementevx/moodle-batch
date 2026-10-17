@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { verifyEvidence, readRenderedSource, sourceText, decodeSource, reviewEvidenceSupport } from '../../batch/evidence.js';
 import { chromium } from 'playwright';
+import { parseWeb } from '../../batch/web.js';
 
 test('evidence requires a real quote from the correct context or an observed and readable web source', async () => {
   const quote = 'This is the actual source statement.';
@@ -95,9 +96,10 @@ test('multiple source quotes must all be observed, exact and cover every matchin
     [evidence[0], { ...evidence[1], url: 'https://unobserved.example/' }]]) {
     assert.equal((await verify({ ...decision, evidence: wrong })).status, 'needs_review');
   }
-  const multiple = { slot: '1', type: 'multiple' };
+  const multiple = { slot: '1', type: 'multiple', options: [{ id: 'o1', text: 'First' }, { id: 'o2', text: 'Second' }] };
   const mapped = evidence.map(({ rowIds, ...item }, i) => ({ ...item, optionIds: [`o${i + 1}`] }));
-  assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: mapped }], [multiple], {}, options))[0].evidenceVerified, true);
+  const optionChecks = mapped.map((item, i) => ({ optionId: `o${i + 1}`, selected: true, reason: 'The quoted event supports this option.', evidence: item }));
+  assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: mapped, optionChecks }], [multiple], {}, options))[0].evidenceVerified, true);
   assert.equal((await verifyEvidence([{ ...decision, answer: ['o1', 'o2'], evidence: [mapped[0]] }], [multiple], {}, options))[0].reviewReason, 'evidence_incomplete');
 });
 
@@ -105,8 +107,9 @@ test('a rejected duplicate cannot block complete verified coverage or fill a mis
   const quote = 'The course explicitly establishes the first and second selected claims.';
   const good = { kind: 'context', quote, optionIds: ['one', 'two'] };
   const bad = { kind: 'web', url: 'https://source.example/blocked', quote: 'A duplicate quote from an unreadable external source.', optionIds: ['one'] };
-  const question = { slot: '1', type: 'multiple' };
-  const decision = { slot: '1', status: 'candidate', answer: ['one', 'two'], sourceUrls: [bad.url], evidence: [bad, good] };
+  const question = { slot: '1', type: 'multiple', options: [{ id: 'one', text: 'First' }, { id: 'two', text: 'Second' }] };
+  const decision = { slot: '1', status: 'candidate', answer: ['one', 'two'], sourceUrls: [bad.url], evidence: [bad, good],
+    optionChecks: question.options.map(option => ({ optionId: option.id, selected: true, reason: 'The course explicitly includes this claim.', evidence: good })) };
   const options = { readSource: async () => { throw new Error('SOURCE_UNAVAILABLE'); }, renderSource: null };
   const result = (await verifyEvidence([decision], [question], { text: quote }, options))[0];
   assert.equal(result.status, 'candidate');
@@ -196,4 +199,48 @@ test('an unspecified deadline requires an explicit source statement rather than 
     const [accepted] = await verifyEvidence([{ ...answer, evidence: { ...answer.evidence, quote: explicit } }], [question], {}, { readSource: async () => explicit });
     assert.equal(accepted.status, 'candidate');
   }
+});
+
+
+test('multiple answers require sourced decisions for omitted options, not just genuine selected quotes', async () => {
+  const included = 'The first and second items belong to the described category.';
+  const excluded = 'The third and fourth items belong to a different, excluded category.';
+  const question = { slot: '1', type: 'multiple', options: ['one', 'two', 'three', 'four'].map(id => ({ id, text: id })) };
+  const evidence = { kind: 'context', quote: included };
+  const decision = { slot: '1', status: 'candidate', answer: ['one', 'two'], confidence: 0.99, sourceUrls: [], evidence };
+  const checks = question.options.map((option, i) => ({ optionId: option.id, selected: i < 2,
+    reason: i < 2 ? 'Included in this category.' : 'Explicitly assigned to the excluded category.',
+    evidence: { kind: 'context', quote: i < 2 ? included : excluded } }));
+  const verify = changes => verifyEvidence([{ ...decision, ...changes }], [question], { text: included + ' ' + excluded }).then(r => r[0]);
+  const good = await verify({ optionChecks: checks });
+  assert.equal(good.status, 'candidate'); assert.equal(good.optionsVerified, true);
+  for (const optionChecks of [undefined, checks.slice(0, 2), [...checks.slice(0, 3), checks[0]],
+    checks.map((c, i) => i === 3 ? { ...c, selected: true } : c),
+    checks.map((c, i) => i === 3 ? { ...c, selected: null } : c),
+    checks.map((c, i) => i === 3 ? { ...c, evidence: undefined } : c),
+    checks.map((c, i) => i === 3 ? { ...c, reason: '' } : c),
+    checks.map((c, i) => i === 3 ? { ...c, evidence: { kind: 'context', quote: 'An invented exclusion with a sufficiently long quote.' } } : c)]) {
+    const result = await verify({ optionChecks, optionsVerified: true });
+    assert.equal(result.status, 'needs_review'); assert.equal(result.reviewReason, 'multiple_completeness');
+    assert.equal(result.evidenceVerified, false);
+  }
+  assert.equal(reviewEvidenceSupport({ ...decision, optionsVerified: true }, question).status, 'needs_review', 'old cached selected-only evidence cannot bypass completeness');
+  const remembered = { ...question, memory: { multipleOptions: { four: false } } };
+  assert.equal((await verifyEvidence([{ ...decision, optionChecks: checks.map(c => c.optionId === 'four' ? { ...c, evidence: undefined } : c) }],
+    [remembered], { text: included + ' ' + excluded }))[0].status, 'candidate');
+});
+
+
+test('fresh multiple answers with only context quote arrays keep every option check through parsing', async () => {
+  const first = 'Alpha and Beta are both included by the course definition.';
+  const second = 'Gamma is explicitly excluded from the course definition.';
+  const question = { slot: '1', type: 'multiple', options: ['alpha', 'beta', 'gamma'].map(id => ({ id, text: id })), memory: { excludedAnswers: [] } };
+  const evidence = [{ kind: 'context', quote: first, optionIds: ['alpha', 'beta'] }];
+  const optionChecks = question.options.map((option, i) => ({ optionId: option.id, selected: i < 2,
+    reason: 'The course explicitly defines inclusion or exclusion.', evidence: { kind: 'context', quote: i < 2 ? first : second } }));
+  const raw = JSON.stringify({ requestId: 'context-array', answers: [{ slot: '1', answer: ['alpha', 'beta'], needsReview: false,
+    confidence: 0.99, sourceUrls: [], evidence, optionChecks }] });
+  const parsed = parseWeb(raw, [question], 'context-array', []);
+  assert.equal(parsed[0].status, 'candidate'); assert.deepEqual(parsed[0].optionChecks, optionChecks);
+  assert.equal((await verifyEvidence(parsed, [question], { text: first + ' ' + second }))[0].status, 'candidate');
 });

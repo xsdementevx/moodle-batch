@@ -10,9 +10,23 @@ import { join } from 'node:path';
 export const evidenceText = text => normalize(String(text).replace(/(?<=\p{L})[\u001f\u00ad](?=\p{L})/gu, '')
   .replace(/\\[nr]/gu, ' ').replace(/\s*\|\s*/gu, ' '));
 
+function completeOptionChecks(decision, question) {
+  const checks = decision.optionChecks;
+  return Array.isArray(decision.answer) && Array.isArray(checks) && Array.isArray(question.options) && checks.length === question.options.length
+    && new Set(checks.map(check => check?.optionId)).size === checks.length
+    && question.options.every(option => {
+      const check = checks.find(item => item?.optionId === option.id);
+      return check && typeof check.selected === 'boolean' && check.selected === decision.answer?.includes(option.id)
+        && typeof check.reason === 'string' && check.reason.trim().length > 0;
+    });
+}
+
 // Silence about a deadline does not establish that no deadline exists.
 export function reviewEvidenceSupport(decision, question) {
   if (decision.status !== 'candidate' || !question) return decision;
+  if (question.type === 'multiple' && (!completeOptionChecks(decision, question) || decision.optionsVerified !== true)) {
+    return { ...decision, status: 'needs_review', evidenceVerified: false, optionsVerified: false, reviewReason: 'multiple_completeness' };
+  }
   const answer = question.type === 'choice'
     ? question.options?.find(option => option.id === decision.answer?.[0])?.text : question.type === 'text' ? decision.answer : '';
   const unspecified = /(?:срок|врем[яени]|период)[^.!?]{0,100}(?:не\s+(?:определ|устан(?:ов|авл)|огранич|предусмотр|регламент)|отсутств)|(?:не\s+(?:определ|устан(?:ов|авл)|огранич|предусмотр|регламент)|отсутств)[^.!?]{0,100}(?:срок|врем[яени]|период)/iu;
@@ -188,9 +202,24 @@ export async function verifyEvidence(decisions, questions, context, { readSource
         }
       }
     }
+    let optionsVerified = false;
+    const optionFailures = [];
+    if (grounded && question?.type === 'multiple') {
+      optionsVerified = completeOptionChecks(decision, question);
+      if (optionsVerified) for (const check of decision.optionChecks) {
+        if (question.memory?.multipleOptions?.[check.optionId] === check.selected) continue;
+        if (!(await verifyOne(check.evidence, decision, question)).grounded) {
+          optionsVerified = false;
+          optionFailures.push(question.options.find(option => option.id === check.optionId).text);
+        }
+      }
+      if (!optionsVerified) { grounded = false; reason = 'multiple_completeness'; }
+    }
     results.push(reviewEvidenceSupport({ ...decision, evidenceVerified: grounded,
+      ...(question?.type === 'multiple' ? { optionsVerified } : {}),
+      ...(optionFailures.length ? { reviewExplanation: 'Нет проверяемого обоснования вариантов: ' + optionFailures.join('; ') } : {}),
       ...(grounded && rejected.length ? { evidence: verified, rejectedEvidence: rejected } : {}),
-      reviewReason: grounded ? undefined : decision.reviewReason || reason,
+      reviewReason: grounded ? undefined : reason === 'multiple_completeness' ? reason : decision.reviewReason || reason,
       status: decision.status === 'candidate' && !grounded ? 'needs_review' : decision.status }, question));
   }
   return results;

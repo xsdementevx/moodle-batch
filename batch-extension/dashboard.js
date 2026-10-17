@@ -40,6 +40,9 @@ const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на ко
 errors.GPT_WEB_REASONING_UNAVAILABLE = 'Не удалось выбрать уровень размышления ChatGPT. Запрос не отправлен. Повторите запуск после загрузки меню модели.';
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
 errors.GPT_WEB_CONVERSATION_UNAVAILABLE = 'Сохранённая беседа ChatGPT недоступна (404). Проверьте аккаунт и наличие чата. Повторный запрос не отправляется.';
+errors.GPT_WEB_GENERATION_INTERRUPTED = 'Поток ответа ChatGPT прерван. Запрос сохранён; повторно модели не отправляется.';
+errors.GPT_WEB_GENERATION_TIMEOUT = 'ChatGPT не завершил поток ответа за 5 минут. Запрос сохранён; перед продолжением нужно прочитать исходную беседу.';
+errors.GPT_WEB_HISTORY_LOAD_TIMEOUT = 'История исходной беседы ChatGPT не загрузилась за 5 минут. Повторный запрос модели не отправляется.';
 errors.GPT_WEB_RATE_LIMITED = 'ChatGPT ограничил частоту чтения (429). Время ожидания истекло; запрос сохранён, повторно модели не отправлялся.';
 errors.GPT_WEB_CONVERSATION_ACCESS_DENIED = 'ChatGPT не разрешил прочитать беседу. Проверьте вход в тот же аккаунт в браузере.';
 errors.INVALID_ATTEMPT_TIME = 'Сохранённая отметка времени попытки повреждена или относится к другой попытке. Отправка остановлена.';
@@ -56,6 +59,7 @@ const answerDetails = source => [
   ...(source.answer?.length ? [`Отправлено: ${source.answer.join('; ')}`] : []),
   ...(Number.isFinite(source.confidence) ? [`Уверенность модели: ${Math.round(source.confidence * 100)}%`] : []),
   ...(source.evidence || []).map(e => `Цитата: «${e.quote}» · ${e.kind === 'context' ? 'материалы курса' : e.url}`),
+  ...(source.optionChecks || []).map(check => `${check.selected ? 'Выбрать' : 'Исключить'} «${check.text}»: ${check.reason}${check.evidence ? ` · «${check.evidence.quote}» · ${check.evidence.kind === 'context' ? 'материалы курса' : check.evidence.url}` : ' · проверено Moodle'}`),
 ];
 const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${question.explanation ? ` · ${question.explanation}` : ''}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}`;
 function problemDetails(q) {
