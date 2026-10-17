@@ -401,6 +401,8 @@ test('installed extension accepts a different browser account and recovers a los
     const opened = context.waitForEvent('page');
     await page.locator('#moodle-batch-open').click();
     const dashboard = await opened;
+    assert.equal(await page.locator('#moodle-batch-open').textContent(), 'Moodle Batch открыт в новой вкладке');
+    assert.equal(await page.locator('#moodle-batch-open').isDisabled(), true);
     await dashboard.locator('.quiz').waitFor();
     assert.equal(await dashboard.locator('.quiz input').isChecked(), true);
     assert.equal(sessionUpdates, 1, 'browser session is synchronized automatically');
