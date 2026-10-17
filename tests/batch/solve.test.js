@@ -228,7 +228,7 @@ test('new chat switches to conversation reads when its URL appears after the use
   assert.equal(waits, 2); assert.equal(reads, 1);
 });
 
-test('legacy transcript scrolls itself when completion controls mount only at the bottom', async () => {
+test('legacy completed transcript can be read without scrolling', async () => {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
@@ -236,34 +236,29 @@ test('legacy transcript scrolls itself when completion controls mount only at th
     await page.route('https://chatgpt.com/', route => route.fulfill({ contentType: 'text/html', body: `<main>
       <div id="transcript" style="height:200px;overflow-y:auto"><div data-message-author-role="user">nonce</div><div style="height:1500px"></div>
       <div data-message-author-role="assistant"><pre><code>${JSON.stringify(payload)}</code></pre><a href="https://source.example/">source</a></div></div></main>
-      <script>document.getElementById('transcript').addEventListener('scroll', e => {
-        if (e.target.scrollTop + e.target.clientHeight < e.target.scrollHeight - 2) return;
-        if (document.querySelector('button')) return;
+      <script>
         const button = document.createElement('button'); button.setAttribute('aria-label', 'Copy');
         document.querySelector('[data-message-author-role=assistant]').append(button);
-      });</script>` }));
+      </script>` }));
     await page.goto('https://chatgpt.com/');
     assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
-    assert.ok(await page.locator('#transcript').evaluate(el => el.scrollTop > 0));
+    assert.equal(await page.locator('#transcript').evaluate(el => el.scrollTop), 0);
   } finally { await browser.close(); }
 });
 
-test('pending conversation follows the viewport automatically and reads the final response without sending again', async () => {
+test('pending conversation reads the final response without viewport, copy controls or another send', async () => {
   const url = 'https://chatgpt.com/c/owned-conversation';
   const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
-  const transcript = { clientHeight: 200, scrollHeight: 1000, scrollTop: 0, closest: () => null };
-  const main = { querySelectorAll: () => [transcript], clientHeight: 0, parentElement: null };
   let reads = 0;
   const page = { url: () => url,
-    evaluate: async (fn, arg) => {
-      if (arg === url) return runInNewContext(`(${fn.toString()})(expected)`, { expected: arg,
-        location: { href: url }, document: { querySelector: () => main }, getComputedStyle: () => ({ overflowY: 'auto' }) });
+    evaluate: async (_fn, arg) => {
+      assert.equal(arg, '/c/owned-conversation', 'only the pinned API request is allowed');
       reads++;
       return [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
-        { role: 'assistant', endTurn: transcript.scrollTop > 0, text: JSON.stringify(payload) }];
-    }, locator: () => assert.fail('pending response must not resend or touch the draft') };
+        { role: 'assistant', endTurn: reads === 2, text: JSON.stringify(payload) }];
+    }, locator: () => assert.fail('pending response must not touch the transcript or draft') };
   assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
-  assert.equal(transcript.scrollTop, 1000); assert.equal(reads, 2);
+  assert.equal(reads, 2);
 });
 
 test('unavailable conversation and access errors stop the pinned read without retry or sending', async () => {
