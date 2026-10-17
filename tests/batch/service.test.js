@@ -216,7 +216,7 @@ test('real runner keeps native submission, checks Stop and records model attribu
   try {
     const result = await runQuiz(moodle, store, '20', options);
     assert.equal(result.percent, 100); assert.equal(result.gradePercent, 100); assert.equal(submitted, 1); assert.equal(imported, 1);
-    assert.deepEqual(result.sources, [{ slot: '1', question: 'Synthetic question', answer: ['A'], provider: 'memory', feedback: 'correct' }]);
+    assert.deepEqual(result.sources, [{ slot: '1', question: 'Synthetic question', questionType: 'choice', answer: ['A'], provider: 'memory', feedback: 'correct' }]);
     stopped = true;
     await assert.rejects(runQuiz(moodle, store, '20', options), /STOPPED/);
     assert.equal(submitted, 1);
@@ -225,8 +225,9 @@ test('real runner keeps native submission, checks Stop and records model attribu
     const evidence = { kind: 'web', url: 'https://example.org/reference', quote: 'The documented answer is A.', optionIds: ['private-option-id'] };
     const attributed = await runQuiz(moodle, store, '20', { ...options, root: join(root, 'model'),
       solve: async questions => questions.map(q => ({ ...q, decision: { status: 'candidate', provider: 'gpt-web', confidence: 0.92,
-        answer: [optionId('A')], evidenceVerified: true, evidence: [evidence] } })) });
+        answer: [optionId('A')], jevAgreement: false, evidenceVerified: true, evidence: [evidence] } })) });
     assert.equal(attributed.sources[0].confidence, 0.92);
+    assert.equal(attributed.sources[0].jevAgreement, false);
     assert.deepEqual(attributed.sources[0].answer, ['A']);
     assert.deepEqual(attributed.sources[0].evidence, [{ kind: 'web', url: evidence.url, quote: evidence.quote }]);
   } finally { await rm(root, { recursive: true, force: true }); }

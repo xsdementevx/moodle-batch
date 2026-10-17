@@ -35,7 +35,7 @@ test('person blanks use a surname while explicit full-name requests and non-pers
   assert.equal(normalizeShortAnswerForQuestion('Война называлась ….', 'Великая Отечественная война'), 'Великая Отечественная война');
   assert.equal(normalizeShortAnswerForQuestion('Кто принимал парад?', fullName), fullName);
   const person = q('1', { type: 'text', options: [], text: 'Маршал, принимавший Парад Победы — ….', textFormat: 'shortanswer', textFieldSize: 6, memory: { excludedAnswers: [fullName] } });
-  const parsed = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer: fullName, needsReview: false,
+  const parsed = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer: fullName, confidence: 0.99, needsReview: false,
     sourceUrls: ['https://source.example/'] }] }), [person], 'nonce', ['https://source.example/'])[0];
   assert.equal(parsed.answer, 'Жуков');
   assert.equal(parsed.rawAnswer, fullName);
@@ -53,7 +53,7 @@ test('uncertain Web responses preserve diagnostics but remain unverified', async
   assert.equal(verified[0].status, 'needs_review');
   assert.equal(verified[0].evidenceVerified, false);
   assert.equal(verified[0].reviewReason, 'model_uncertain');
-  for (const [confidence, status] of [[0.86, 'needs_review'], [0.899, 'needs_review'], [0.90, 'candidate']]) {
+  for (const [confidence, status] of [[undefined, 'needs_review'], [0.86, 'needs_review'], [0.899, 'needs_review'], [0.90, 'candidate']]) {
     assert.equal(parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence,
       needsReview: false, sourceUrls: [evidence.url], evidence }] }), [question], 'nonce', [evidence.url])[0].status, status);
   }
@@ -79,7 +79,7 @@ test('both providers receive matching row memory and reject a different whole ma
   const input = JSON.parse(webPrompt([question], { text: 'Course context' }, 'nonce').split('\n').at(-1));
   assert.deepEqual(input.questions[0].matchingMemory, question.memory.matchingRows);
   const answer = Object.fromEntries(rows.map(row => [row.id, options[0].id]));
-  const parsed = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer, needsReview: false, sourceUrls: [] }] }), [question], 'nonce', []);
+  const parsed = parseWeb(JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer, confidence: 0.99, needsReview: false, sourceUrls: [] }] }), [question], 'nonce', []);
   assert.equal(parsed[0].status, 'needs_review');
   assert.equal(parsed[0].reviewReason, 'excluded_answer');
   assert.notEqual(questionFingerprint(question, {}), questionFingerprint({ ...question, memory: { ...question.memory, matchingRows: undefined } }, {}));
@@ -92,7 +92,7 @@ test('legacy short-answer wording rules preserve source words, strip repeated un
   assert.equal(normalizeShortAnswerForQuestion('Может ли работник отказаться?', 'Да, может'), 'да');
   assert.equal(normalizeShortAnswerForQuestion('Срок от … до … лет', 'от 2 до 5 лет'), '2 до 5');
   assert.equal(normalizeShortAnswerForQuestion('В течение …', '1 года'), 'одного года');
-  const payload = answer => JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer, needsReview: false, sourceUrls: ['https://source.example/one'] }] });
+  const payload = answer => JSON.stringify({ requestId: 'nonce', answers: [{ slot: '1', answer, confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/one'] }] });
   const answer = parseWeb(payload('трое суток'), [question], 'nonce', ['https://source.example/one'])[0];
   assert.equal(answer.answer, 'трое');
   assert.equal(answer.rawAnswer, 'трое суток');
@@ -129,7 +129,7 @@ test('status cleanup closes only Moodle Batch extension pages', async () => {
 });
 
 test('conversation parser validates identity, final answer and actual web tool evidence; completed journal opens no browser', async () => {
-  const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/one'] }] };
+  const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/one'] }] };
   const messages = [{ role: 'user', text: 'requestId nonce' }, { role: 'assistant', endTurn: false },
     { role: 'tool', toolName: 'web.run', sources: result.answers[0].sourceUrls },
     { role: 'assistant', endTurn: true, text: `<escape>${JSON.stringify(result)}</escape>` }];
@@ -172,6 +172,11 @@ test('completed answers gain independent semantic checks without resending to Ch
     assert.equal((await solve([question], {}, { journalPath }))[0].semanticVerified, true);
     assert.equal(checks, 1);
     assert.equal(JSON.parse(await readFile(journalPath, 'utf8')).result.answers[0].semanticVerified, true);
+    const old = JSON.parse(await readFile(journalPath, 'utf8'));
+    delete old.result.answers[0].confidence;
+    await writeFile(journalPath, JSON.stringify(old));
+    assert.equal((await solve([question], {}, { journalPath }))[0].status, 'needs_review');
+    assert.equal(checks, 1, 'missing confidence cannot be promoted by another semantic check');
     await solve.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -197,7 +202,7 @@ test('completed evidence arrays are rechecked after a reader upgrade but model u
   const quote = 'The exact verified course statement provides the answer.';
   const evidence = [{ kind: 'context', quote, optionIds: ['one'] }];
   const answers = [
-    { slot: '1', type: 'multiple', answer: ['one'], status: 'needs_review', reviewReason: 'source_quote_not_found', sourceUrls: [], evidence,
+    { slot: '1', type: 'multiple', answer: ['one'], confidence: 0.99, status: 'needs_review', reviewReason: 'source_quote_not_found', sourceUrls: [], evidence,
       optionChecks: ['one', 'two'].map(id => ({ optionId: id, selected: id === 'one', reason: 'Verified against the course statement.', evidence: evidence[0] })) },
     { slot: '2', answer: ['one'], status: 'needs_review', reviewReason: 'model_uncertain', sourceUrls: [], evidence },
   ];
@@ -216,7 +221,7 @@ test('completed evidence arrays are rechecked after a reader upgrade but model u
 });
 
 test('a completed conversation is read without waiting on DOM, while a foreign response still fails', async () => {
-  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/'] }] };
   const messages = [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
     { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
   let reads = 0;
@@ -231,7 +236,7 @@ test('a completed conversation is read without waiting on DOM, while a foreign r
 });
 
 test('new chat switches to conversation reads when its URL appears after the user turn', async () => {
-  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/'] }] };
   const messages = [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
     { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
   let url = 'https://chatgpt.com/', waits = 0, reads = 0;
@@ -255,7 +260,7 @@ test('legacy completed transcript can be read without scrolling', async () => {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage();
-    const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+    const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/'] }] };
     await page.route('https://chatgpt.com/', route => route.fulfill({ contentType: 'text/html', body: `<main>
       <div id="transcript" style="height:200px;overflow-y:auto"><div data-message-author-role="user">nonce</div><div style="height:1500px"></div>
       <div data-message-author-role="assistant"><pre><code>${JSON.stringify(payload)}</code></pre><a href="https://source.example/">source</a></div></div></main>
@@ -272,7 +277,7 @@ test('legacy completed transcript can be read without scrolling', async () => {
 test('pending conversation backs off before reading the final response without scrolling or another send', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const url = 'https://chatgpt.com/c/owned-conversation';
-  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/'] }] };
   let reads = 0;
   const page = { url: () => url,
     evaluate: async (_fn, arg) => {
@@ -305,7 +310,7 @@ test('unavailable conversation and access errors stop the pinned read without re
 test('pinned reads honor rate limit backoff and retry temporary server failures without resending', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const url = 'https://chatgpt.com/c/owned-conversation';
-  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/'] }] };
   let reads = 0;
   const page = { url: () => url, locator: () => assert.fail('no draft or send interaction'),
     evaluate: async (_fn, pathname) => {
@@ -376,7 +381,7 @@ test('extension reconnects a missing or detached context before dispatch and nev
 });
 
 test('continuation result reads the confirmed conversation when the visible tab navigates elsewhere', async () => {
-  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: [] }] };
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], confidence: 0.99, needsReview: false, sourceUrls: [] }] };
   const messages = [{ role: 'user', text: 'requestId parent' }, { role: 'assistant', endTurn: true, text: 'previous response' },
     { role: 'user', text: 'requestId nonce' }, { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
   const page = { url: () => 'https://chatgpt.com/c/foreign-chat',
@@ -429,7 +434,7 @@ test('cascade skips known answers, forwards only unresolved and reuses dispatch 
     let jevCalls = 0;
     const jev = async packet => { jevCalls++; assert.equal(packet.bindings.length, 1); return response(packet); };
     const web = async batch => { assert.deepEqual(batch.map(q => q.slot), ['2', '3']);
-      return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: q.type === 'text' ? 'term' : [options[0].id], status: 'candidate' })); };
+      return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: q.type === 'text' ? 'term' : [options[0].id], status: 'candidate', confidence: 0.99 })); };
     const context = { status: 'ready', text: 'Sample context. '.repeat(20), contextHash: 'test-context' };
     const result = await solveTest(questions, context, { journalDir: dir, jev, web });
     assert.deepEqual(result.map(q => q.decision.provider), ['memory', 'jev', 'gpt_web']);
@@ -446,7 +451,7 @@ test('cascade skips known answers, forwards only unresolved and reuses dispatch 
 
 test('Web validates request identity, coverage, answers and observed source links', async () => {
   const question = q('1');
-  const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[1].id], needsReview: false, sourceUrls: ['https://source.example/one'] }] };
+  const result = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[1].id], confidence: 0.99, needsReview: false, sourceUrls: ['https://source.example/one'] }] };
   assert.equal(parseWeb(JSON.stringify(result), [question], 'nonce', result.answers[0].sourceUrls)[0].status, 'candidate');
   assert.equal(parseWeb(JSON.stringify(result), [question], 'nonce', [])[0].status, 'needs_review');
   for (const wrapped of [`<CodeBlock language="json" editable={true}>\n${JSON.stringify(result)}\n</CodeBlock>`,
@@ -493,7 +498,7 @@ test('web verification revisits only needs_review questions and reuses escalatio
     }
     return batch.map(question => ({ slot: question.slot, provider: 'gpt_web', answer: [question.options[0].id],
       reviewReason: 'context_quote_not_found', evidence: { kind: 'context', quote: 'A quote missing from the material.' },
-      status: question.slot === '1' && !Object.hasOwn(question, 'previousUnverifiedAnswer') ? 'needs_review' : 'candidate' }));
+      confidence: 0.99, status: question.slot === '1' && !Object.hasOwn(question, 'previousUnverifiedAnswer') ? 'needs_review' : 'candidate' }));
   });
   try {
     const result = await solveTest(questions, context, { journalDir: dir, web, onAnswers: answers => { notified.push(answers.map(q => q.decision?.status)); } });
@@ -529,7 +534,7 @@ test('shared packets preserve test context, avoid slot collisions, and escalate 
         assert.equal(prompt.contexts.first, contexts.documents.first.text);
         assert.equal(prompt.contexts.second, contexts.documents.second.text);
         return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: [options[q.quizId === '20' ? 0 : 1].id],
-          status: q.quizId === '21' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate', conversationUrl: 'https://chatgpt.com/c/synthetic' }));
+          confidence: 0.99, status: q.quizId === '21' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate', conversationUrl: 'https://chatgpt.com/c/synthetic' }));
       } });
     assert.equal(jevCalls, 1);
     assert.deepEqual(calls.map(c => c.slots), [['20:30:1', '21:31:1'], ['21:31:1'], ['21:31:1']]);
@@ -550,7 +555,7 @@ test('verified cached answers survive regrouping but changed wording, context or
   try {
     await writeFile(join(dir, `${'b'.repeat(64)}.json`), JSON.stringify({ state: 'complete',
       bindings: [{ slot: question.slot, fingerprint: questionFingerprint(question, context) }],
-      result: { answers: [{ slot: question.slot, status: 'candidate', answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true, semanticVerified: true }] } }));
+      result: { answers: [{ slot: question.slot, status: 'candidate', confidence: 0.99, answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true, semanticVerified: true }] } }));
     const [cached] = await solveTest([question], context, { journalDir: dir, web: () => assert.fail('verified answer must be reused') });
     assert.equal(cached.decision.cached, true);
     const path = join(dir, `${'b'.repeat(64)}.json`), saved = JSON.parse(await readFile(path, 'utf8'));
@@ -624,6 +629,25 @@ test('multiple answers check omitted options at Medium even with 99% confidence 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('negation and Jev disagreement require Medium while an ordinary agreed answer keeps Instant', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-reasoning-floor-'));
+  try {
+    const questions = [q('1', { text: 'Что НЕ относится к перечню?' }), q('2'), q('3')];
+    const context = { status: 'ready', text: 'Course material supports Alpha and Beta. '.repeat(10), contextHash: 'material' };
+    const calls = [];
+    const results = await solveTest(questions, context, { journalDir: dir, jev: async packet => response(packet),
+      web: async (batch, material, opts) => {
+        calls.push({ reasoning: opts.reasoning, slots: batch.map(q => q.slot) });
+        if (opts.reasoning === 'medium') assert.deepEqual(batch.map(q => q.reviewReason), ['negative_question', 'provider_disagreement']);
+        return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: [options[q.slot === '2' ? 1 : 0].id],
+          status: 'candidate', confidence: .99, evidenceVerified: true, semanticVerified: true }));
+      } });
+    assert.deepEqual(calls, [{ reasoning: 'instant', slots: ['1', '2', '3'] }, { reasoning: 'medium', slots: ['1', '2'] }]);
+    assert.equal(results[1].decision.jevAgreement, false);
+    assert.equal(results[2].decision.jevAgreement, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('independent context packets get Instant answers before clarification and retain their own conversation', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-instant-first-'));
   const context = { documents: { first: { status: 'missing', text: 'Alpha '.repeat(10000), contextHash: 'first' },
@@ -638,7 +662,7 @@ test('independent context packets get Instant answers before clarification and r
     assert.deepEqual(Object.keys(material.documents), [question.contextId]);
     if (opts.reasoning !== 'instant') assert.equal(opts.continueUrl, 'https://chatgpt.com/c/first', 'another packet must not switch the clarification chat');
     return { answers: [{ slot: question.slot, provider: 'gpt_web', answer: [options[0].id], evidenceVerified: true, semanticVerified: true,
-      status: question.contextId === 'first' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate',
+      confidence: 0.99, status: question.contextId === 'first' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate',
       conversationUrl: `https://chatgpt.com/c/${question.contextId}` }] };
   }, opts.questionIds, opts.bindings).then(result => result.answers);
   try {
@@ -728,7 +752,7 @@ test('Jev strips native matching fields and sends individually oversized questio
     const solved = await solveTest([q('1'), matching], context, { journalDir: dir,
       jev: async packet => { jevCalls++; assert.deepEqual(packet.bindings.map(b => b.q.slot), ['1']); return response(packet); },
       web: async batch => { webCalls++; assert.deepEqual(batch.map(q => q.slot), ['1', '2']); assert.deepEqual(batch[1].rows, rows);
-        return batch.map(q => ({ slot: q.slot, status: 'candidate', answer: q.type === 'matching'
+        return batch.map(q => ({ slot: q.slot, status: 'candidate', confidence: 0.99, answer: q.type === 'matching'
           ? Object.fromEntries(rows.map(r => [r.id, r.options[0].id])) : [options[0].id] })); }
     });
     assert.equal(jevCalls, 1); assert.equal(webCalls, 1);
@@ -772,7 +796,7 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
       async function send(){window.dispatches++;await fetch('/backend-api/f/conversation',{method:'POST'});const text=document.querySelector('[role=textbox]').innerText;const id=/requestId[^a-zA-Z0-9]+([a-zA-Z0-9]+)/.exec(text)[1];
       const user=document.createElement('div');user.dataset.messageAuthorRole='user';user.textContent=text;document.body.append(user);
       const assistant=document.createElement('div');assistant.dataset.messageAuthorRole='assistant';
-      const pre=document.createElement('pre');const code=document.createElement('code');code.textContent=JSON.stringify({requestId:id,answers:[{slot:'1',answer:['${options[0].id}'],needsReview:false,evidence:{kind:'context',quote:'Sample material supports Alpha.'},sourceUrls:['https://source.example/one']}]});pre.append(code);assistant.append(pre);
+      const pre=document.createElement('pre');const code=document.createElement('code');code.textContent=JSON.stringify({requestId:id,answers:[{slot:'1',answer:['${options[0].id}'],confidence:0.99,needsReview:false,evidence:{kind:'context',quote:'Sample material supports Alpha.'},sourceUrls:['https://source.example/one']}]});pre.append(code);assistant.append(pre);
       const source=document.createElement('a');source.href='https://source.example/one';source.textContent='Source';assistant.append(source);document.body.append(assistant);
       const copy=document.createElement('button');copy.dataset.testid='copy-turn-action-button';document.body.append(copy);}
       </script>` }));

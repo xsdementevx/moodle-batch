@@ -84,7 +84,8 @@ export function parseWeb(text, questions, requestId, citations) {
     if (Object.hasOwn(item, 'confidence') && (!Number.isFinite(item.confidence) || item.confidence < 0 || item.confidence > 1)) throw new Error('INVALID_WEB_RESPONSE');
     const confidence = item.confidence === undefined ? {} : { confidence: item.confidence };
     const optionChecks = q.type === 'multiple' && Array.isArray(item.optionChecks) ? { optionChecks: item.optionChecks } : {};
-    if (item.needsReview || item.answer === null || (item.confidence !== undefined && item.confidence < MIN_WEB_CONFIDENCE)) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
+    if (item.needsReview || item.answer === null || !Number.isFinite(item.confidence) || item.confidence < MIN_WEB_CONFIDENCE) return { slot: q.slot, provider: 'gpt_web', answer: item.answer, status: 'needs_review', sourceUrls,
+      ...(!Number.isFinite(item.confidence) ? { reviewReason: 'model_uncertain' } : {}),
       ...confidence, ...review, ...optionChecks, ...(item.evidence ? { evidence: item.evidence } : {}), verifiedByMoodle: false };
     // Validate the model's type before applying the legacy short-answer rules.
     answerSignature(q, item.answer);

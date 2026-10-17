@@ -83,7 +83,8 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, sec
       const answer = native?.type === 'text' ? [native.textAnswer].filter(value => value != null)
         : native?.type === 'matching' ? native.rows.map(row => `${row.text}: ${row.options.find(o => o.value === row.selectedValue)?.text || 'без ответа'}`)
         : native?.options.filter(o => o.selected).map(o => o.text) || [];
-      return { slot: q.slot, question: q.text, answer, provider: q.decision?.provider,
+      return { slot: q.slot, question: q.text, questionType: q.type, answer, provider: q.decision?.provider,
+      ...(typeof q.decision?.jevAgreement === 'boolean' ? { jevAgreement: q.decision.jevAgreement } : {}),
       ...(q.decision?.cached ? { cached: true } : {}),
       ...(q.decision?.reasoning ? { reasoning: q.decision.reasoning } : {}),
       ...(q.decision?.semanticVerified ? { semanticVerified: true } : {}),

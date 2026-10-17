@@ -32,7 +32,7 @@ test('clarification reuses its owned conversation tab without navigation and pre
         const messages = conversations.get(id) || []; sends++;
         messages.push({ author: { role: 'user' }, content: { content_type: 'text', parts: [prompt] } },
           { author: { role: 'assistant' }, end_turn: true, content: { content_type: 'text', parts: [JSON.stringify({ requestId,
-            answers: [{ slot: '1', answer: ['alpha'], needsReview: false, evidence: { kind: 'context', quote: material.text }, sourceUrls: [] }] })] } });
+            answers: [{ slot: '1', answer: ['alpha'], confidence: 0.99, needsReview: false, evidence: { kind: 'context', quote: material.text }, sourceUrls: [] }] })] } });
         conversations.set(id, messages); return json({ id });
       }
       assert.equal(path, '/', 'clarification must not reload a conversation document'); navigations.push(path);

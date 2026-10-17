@@ -38,7 +38,7 @@ const data = () => ({ conversation_id: 'owned-history', current_node: 'answer',
   page_info: { has_previous_page: false, has_next_page: false }, messages: [
     { id: 'user', author: { role: 'user' }, content: { content_type: 'text', parts: ['requestId nonce'] } },
     { id: 'answer', author: { role: 'assistant' }, end_turn: true, content: { content_type: 'text', parts: [JSON.stringify({
-      requestId: 'nonce', answers: [{ slot: '1', answer: ['alpha'], needsReview: false, sourceUrls: [] }],
+      requestId: 'nonce', answers: [{ slot: '1', answer: ['alpha'], confidence: 0.99, needsReview: false, sourceUrls: [] }],
     })] } },
   ] });
 

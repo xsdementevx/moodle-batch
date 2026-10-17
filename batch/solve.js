@@ -8,9 +8,10 @@ import { answerSignature, digest, questionKey, isExcludedAnswer } from './answer
 const run = promisify(execFile);
 const MODEL = 'jev-1.13.0';
 export const MIN_WEB_CONFIDENCE = 0.90;
-export const reviewConfidence = answer => answer.status === 'candidate' && Number.isFinite(answer.confidence)
-  && answer.confidence < MIN_WEB_CONFIDENCE
+export const reviewConfidence = answer => answer.status === 'candidate'
+  && (!Number.isFinite(answer.confidence) || answer.confidence < MIN_WEB_CONFIDENCE || answer.confidence > 1)
   ? { ...answer, status: 'needs_review', evidenceVerified: false, reviewReason: 'model_uncertain' } : answer;
+const negativeQuestion = q => /(?:^|[^\p{L}])(?:не|кроме|неверн\p{L}*|исключая|за\s+исключением|not|except|incorrect)(?=$|[^\p{L}])/iu.test(q.text);
 
 export function selectContext(text, questions, limit = 48000) {
   if (text.length <= limit) return text;
@@ -195,7 +196,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       for (const q of unresolved) {
         const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
         const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true && a.semanticVerified === true && reviewEvidenceSupport(a, q).status === 'candidate'
-          && (q.type !== 'multiple' || /^(?:medium|high|Средний|Высокий)$/iu.test(a.reasoning || saved.result.reasoning || '')));
+          && (!(q.type === 'multiple' || negativeQuestion(q)) || /^(?:medium|high|Средний|Высокий)$/iu.test(a.reasoning || saved.result.reasoning || '')));
         if (answer) {
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,
             ...(answer.reasoning || saved.result.reasoning ? { reasoning: answer.reasoning || saved.result.reasoning } : {}) }); }
@@ -246,10 +247,17 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       const accept = (answer, reasoning = 'instant') => {
         let result = reviewEvidenceSupport(reviewConfidence(answer), batch.find(q => q.slot === answer.slot));
         const prior = jevAnswers.get(result.slot), q = batch.find(q => q.slot === result.slot);
+        const agrees = prior && result.status === 'candidate' ? answerSignature(q, prior.answer) === answerSignature(q, result.answer) : undefined;
         if (q.type === 'multiple' && result.status === 'candidate' && reasoning === 'instant') {
           result = { ...result, status: 'needs_review', reviewReason: 'multiple_completeness' };
         }
-        decisions.set(result.slot, prior && result.status === 'candidate' && answerSignature(q, prior.answer) === answerSignature(q, result.answer)
+        if (result.status === 'candidate' && reasoning === 'instant' && (negativeQuestion(q) || agrees === false)) {
+          result = { ...result, status: 'needs_review', reviewReason: agrees === false ? 'provider_disagreement' : 'negative_question',
+            reviewExplanation: agrees === false ? 'Jev предложил другой ответ. Повторно сравни все варианты с материалом и цитатами.'
+              : 'В вопросе есть отрицание или исключение. Повторно проверь, что выбран ответ именно на эту формулировку.' };
+        }
+        if (agrees !== undefined) result = { ...result, jevAgreement: agrees };
+        decisions.set(result.slot, prior && result.status === 'candidate' && agrees
           ? { ...result, provider: 'jev', verifiedBy: 'gpt_web' } : result);
       };
       for (const result of results) accept(result);
