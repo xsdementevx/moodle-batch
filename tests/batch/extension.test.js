@@ -27,7 +27,12 @@ test('Moodle page button opens the extension panel with its quiz selected', asyn
       args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     const page = await context.newPage();
-    await page.route('https://sdo.sibupk.su/**', route => route.fulfill({ contentType: 'text/html', body: '<main id="region-main"></main>' }));
+    await page.route('https://sdo.sibupk.su/**', route => {
+      const legacy = new URL(route.request().url()).searchParams.get('id') === '12346';
+      const body = legacy ? '<button id="moodle-batch-open">Old button</button><script>document.querySelector("#moodle-batch-open").addEventListener("click",()=>document.body.dataset.legacyClicked="1")</script>'
+        : '<main id="region-main"></main>';
+      return route.fulfill({ contentType: 'text/html', body });
+    });
     await page.goto('https://sdo.sibupk.su/mod/quiz/view.php?id=12345', { waitUntil: 'domcontentloaded' });
     const button = page.locator('#moodle-batch-open');
     await button.waitFor({ state: 'visible' });
@@ -37,6 +42,20 @@ test('Moodle page button opens the extension panel with its quiz selected', asyn
     await panel.locator('#nav-tests').waitFor({ state: 'visible' });
     assert.match(worker.url(), /^chrome-extension:\/\//u);
     assert.equal(new URL(panel.url()).searchParams.get('quiz'), '12345');
+    await panel.close();
+    const legacy = await context.newPage();
+    await legacy.goto('https://sdo.sibupk.su/mod/quiz/view.php?id=12346', { waitUntil: 'domcontentloaded' });
+    const adopted = legacy.locator('#moodle-batch-open');
+    await adopted.waitFor({ state: 'visible' });
+    assert.equal(await adopted.evaluate(button => button.dataset.moodleBatchExtension), '1');
+    const adoptedPanelOpen = context.waitForEvent('page');
+    await adopted.click();
+    const adoptedPanel = await adoptedPanelOpen;
+    await adoptedPanel.locator('#nav-tests').waitFor({ state: 'visible' });
+    assert.equal(new URL(adoptedPanel.url()).searchParams.get('quiz'), '12346');
+    assert.equal(await legacy.evaluate(() => document.body.dataset.legacyClicked || ''), '', 'the old button handler is suppressed');
+    await adoptedPanel.close();
+    await legacy.close();
   } finally {
     await context?.close();
     if (server.listening) await new Promise(done => server.close(done));
