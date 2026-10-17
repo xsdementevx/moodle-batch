@@ -25,7 +25,7 @@ test('clarification reuses its owned conversation tab without navigation and pre
         return json({ id, current_node: String(messages.length - 1), mapping: Object.fromEntries(messages.map((message, i) => [String(i),
           { id: String(i), parent: i ? String(i - 1) : null, message }])) });
       }
-      if (path === '/fixture/send') {
+      if (path === '/backend-api/f/conversation') {
         const { prompt, chat } = request.postDataJSON();
         const id = chat || `chat-${conversations.size + 1}`;
         const requestId = JSON.parse(prompt.split('\n').at(-1)).requestId;
@@ -39,7 +39,7 @@ test('clarification reuses its owned conversation tab without navigation and pre
       await route.fulfill({ contentType: 'text/html', body: `<title>ChatGPT fixture</title><div role="textbox" contenteditable="true"></div>
         <button data-testid="composer-plus-btn" onclick="document.querySelector('[role=menuitem]').hidden=false">Tools</button>
         <button role="menuitem" hidden onclick="this.hidden=true">Search the web</button><button data-testid="send-button" onclick="send()">Send</button>
-        <script>async function send(){const editor=document.querySelector('[role=textbox]');const r=await fetch('/fixture/send',{
+        <script>async function send(){const editor=document.querySelector('[role=textbox]');const r=await fetch('/backend-api/f/conversation',{
           method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({prompt:editor.innerText,chat:location.pathname.split('/')[2]})});
           const data=await r.json();history.replaceState({},'', '/c/'+data.id);editor.innerText='';}</script>` });
     });

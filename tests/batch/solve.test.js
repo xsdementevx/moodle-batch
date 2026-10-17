@@ -658,7 +658,12 @@ test('matching context excerpts include terms from row labels and answer options
     { text: 'Альбит', options: [{ text: 'Плагиоклаз' }] }
   ] });
   const text = 'irrelevant '.repeat(800) + ' Альбит относится к группе плагиоклазов. ' + 'irrelevant '.repeat(800);
-  assert.ok(selectContext(text, [question], 2402).includes('Альбит относится к группе плагиоклазов.'));
+  const excerpt = selectContext(text, [question], 2402);
+  assert.ok(excerpt.includes('Альбит относится к группе плагиоклазов.'));
+  assert.match(excerpt, /ВЫДЕРЖКА/);
+  assert.match(excerpt, /Фрагмент \d+ из \d+; исходные символы \d+–\d+/u);
+  assert.ok(excerpt.length <= 2402);
+  assert.equal(selectContext('Full uncut material', [question], 2402), 'Full uncut material');
 });
 
 test('oversized questions are rejected both first and after a packet split for each provider', () => {
@@ -727,12 +732,14 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
   try {
     const context = await browser.newContext();
     const page = await context.newPage();
-    await context.route('https://chatgpt.com/**', route => route.fulfill({ contentType: 'text/html', body: `<title>ChatGPT fixture</title>
+    await context.route('https://chatgpt.com/**', route => new URL(route.request().url()).pathname === '/backend-api/f/conversation'
+      ? route.fulfill({ body: 'data: [DONE]\n\n', contentType: 'text/event-stream' })
+      : route.fulfill({ contentType: 'text/html', body: `<title>ChatGPT fixture</title>
       <div role="textbox" contenteditable="true"></div><button data-testid="composer-plus-btn" onclick="document.querySelector('[role=menuitem]').hidden=false">Tools</button>
       <button role="menuitem" hidden onclick="this.hidden=true">Search the web</button>
       <button data-testid="send-button" onclick="send()">Send</button><script>
       window.dispatches=0;
-      function send(){window.dispatches++;const text=document.querySelector('[role=textbox]').innerText;const id=/requestId[^a-zA-Z0-9]+([a-zA-Z0-9]+)/.exec(text)[1];
+      async function send(){window.dispatches++;await fetch('/backend-api/f/conversation',{method:'POST'});const text=document.querySelector('[role=textbox]').innerText;const id=/requestId[^a-zA-Z0-9]+([a-zA-Z0-9]+)/.exec(text)[1];
       const user=document.createElement('div');user.dataset.messageAuthorRole='user';user.textContent=text;document.body.append(user);
       const assistant=document.createElement('div');assistant.dataset.messageAuthorRole='assistant';
       const pre=document.createElement('pre');const code=document.createElement('code');code.textContent=JSON.stringify({requestId:id,answers:[{slot:'1',answer:['${options[0].id}'],needsReview:false,evidence:{kind:'context',quote:'Sample material supports Alpha.'},sourceUrls:['https://source.example/one']}]});pre.append(code);assistant.append(pre);

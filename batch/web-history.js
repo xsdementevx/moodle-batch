@@ -7,7 +7,7 @@ export function observeWebHistory(page, log) {
   if (state) { if (log) state.log = log; return; }
   if (!page.on) return;
   const account = page.context?.() || page;
-  if (!readLimits.has(account)) readLimits.set(account, { notBefore: 0 });
+  if (!readLimits.has(account)) readLimits.set(account, { notBefore: 0, reads: new Map() });
   state = { entries: new Map(), log, limit: readLimits.get(account) }; histories.set(page, state);
   const requests = new WeakMap();
   const record = detail => { try { state.log?.({ at: new Date().toISOString(), ...detail }); } catch {} };
@@ -21,8 +21,11 @@ export function observeWebHistory(page, log) {
     let resolve;
     const entry = { id, source, generation, method: request.method(), path: url.pathname, promise: new Promise(done => { resolve = done; }), resolve: value => resolve(value) };
     requests.set(request, entry);
-    if (generation) { state.entries.clear(); state.generation = entry; }
-    else if (source === 'page') state.entries.set(id, entry);
+    if (generation) { state.entries.clear(); state.generation = entry; state.armed?.resolve(true); state.armed = undefined; }
+    else {
+      state.limit.reads.set(id, Date.now() + 20000);
+      if (source === 'page') state.entries.set(id, entry);
+    }
     record({ event: 'request', source, method: entry.method, path: url.pathname });
   });
   page.on('response', async response => {
@@ -51,21 +54,41 @@ export function observeWebHistory(page, log) {
     const entry = requests.get(request);
     if (entry) { record({ event: 'requestfailed', source: entry.source, path: entry.path, error: request.failure?.()?.errorText }); entry.resolve(entry.generation ? { error: 'GPT_WEB_GENERATION_INTERRUPTED' } : { unavailable: true }); }
   });
-  page.on('close', () => { state.generation?.resolve({ error: 'GPT_WEB_GENERATION_INTERRUPTED' }); for (const entry of state.entries.values()) entry.resolve?.({ unavailable: true }); });
+  page.on('close', () => { state.armed?.resolve(false); state.generation?.resolve({ error: 'GPT_WEB_GENERATION_INTERRUPTED' }); for (const entry of state.entries.values()) entry.resolve?.({ unavailable: true }); });
 }
 
-export function checkWebReadLimit(page) {
-  const retryMs = (histories.get(page)?.limit.notBefore || 0) - Date.now();
+export function checkWebReadLimit(page, url) {
+  const limit = histories.get(page)?.limit;
+  const retryMs = (limit?.notBefore || 0) - Date.now();
   if (retryMs > 0) throw Object.assign(new Error('GPT_WEB_RATE_LIMITED'), { httpStatus: 429, retryMs });
+  const interval = (url && limit?.reads.get(new URL(url).pathname.split('/').at(-1)) || 0) - Date.now();
+  if (interval > 0) throw Object.assign(new Error('GPT_WEB_RESPONSE_NOT_READY'), { retryMs: interval });
 }
 
 export function clearWebHistory(page) {
   const state = histories.get(page);
-  if (state) { state.entries.clear(); state.generation = undefined; }
+  if (state) { state.entries.clear(); state.generation = undefined; state.armed?.resolve(false); state.armed = undefined; }
+}
+
+export function armWebGeneration(page) {
+  observeWebHistory(page);
+  const state = histories.get(page);
+  if (!state) throw new Error('GPT_WEB_GENERATION_NOT_OBSERVED');
+  let resolve;
+  state.armed = { promise: new Promise(done => { resolve = done; }), resolve: value => resolve(value) };
 }
 
 export async function waitForWebGeneration(page) {
   const state = histories.get(page);
+  if (state?.armed) {
+    let timer;
+    try {
+      const started = await Promise.race([state.armed.promise, new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), 60000);
+      })]);
+      if (!started) throw new Error('GPT_WEB_GENERATION_NOT_OBSERVED');
+    } finally { clearTimeout(timer); }
+  }
   if (!state?.generation) return;
   let timer;
   try {

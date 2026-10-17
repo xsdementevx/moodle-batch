@@ -2,10 +2,38 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { chromium } from 'playwright';
-import { observeWebHistory, nativeWebHistory, nativeConversationMessages, clearWebHistory, waitForWebGeneration, rememberWebRead, checkWebReadLimit } from '../../batch/web-history.js';
+import { observeWebHistory, nativeWebHistory, nativeConversationMessages, clearWebHistory, armWebGeneration, waitForWebGeneration, rememberWebRead, checkWebReadLimit } from '../../batch/web-history.js';
 import { openWebPage, verifyWebParents, readWebResult } from '../../batch/web.js';
 
 const target = 'https://chatgpt.com/c/owned-history';
+test('arming before click waits for a delayed POST and then for its stream; missing POST stays unknown', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const page = new EventEmitter(); page.url = () => target; page.waitForRequest = async () => null;
+  observeWebHistory(page); armWebGeneration(page);
+  let done = false;
+  const pending = waitForWebGeneration(page).then(() => { done = true; });
+  await Promise.resolve(); assert.equal(done, false);
+  const request = { url: () => 'https://chatgpt.com/backend-api/f/conversation', method: () => 'POST', headers: () => ({}) };
+  page.emit('request', request); await Promise.resolve(); assert.equal(done, false);
+  page.emit('requestfinished', request); await pending; assert.equal(done, true);
+  clearWebHistory(page); armWebGeneration(page);
+  const missing = assert.rejects(waitForWebGeneration(page), /GPT_WEB_GENERATION_NOT_OBSERVED/);
+  t.mock.timers.tick(60000); await missing;
+  page.emit('close');
+});
+
+test('an incomplete native history cannot trigger an immediate reserve read of the same conversation', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 100000 });
+  const page = new EventEmitter(); observeWebHistory(page);
+  const request = { url: () => 'https://chatgpt.com/backend-api/conversations/owned-history', method: () => 'GET', headers: () => ({}) };
+  page.emit('request', request);
+  const incomplete = data(); incomplete.messages.pop(); incomplete.current_node = 'user';
+  page.emit('response', { request: () => request, status: () => 200, ok: () => true, headers: () => ({}), json: async () => incomplete });
+  assert.equal(await nativeWebHistory(page, target, 'nonce'), undefined);
+  assert.throws(() => checkWebReadLimit(page, target), e => e.message === 'GPT_WEB_RESPONSE_NOT_READY' && e.retryMs === 20000);
+  t.mock.timers.tick(20000); assert.doesNotThrow(() => checkWebReadLimit(page, target));
+  page.emit('close');
+});
 const data = () => ({ conversation_id: 'owned-history', current_node: 'answer',
   page_info: { has_previous_page: false, has_next_page: false }, messages: [
     { id: 'user', author: { role: 'user' }, content: { content_type: 'text', parts: ['requestId nonce'] } },

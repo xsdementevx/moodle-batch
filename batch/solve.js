@@ -18,8 +18,11 @@ export function selectContext(text, questions, limit = 48000) {
     .map(o => o.text).join(' ')).toLowerCase().match(/[\p{L}\p{N}]{5,}/gu) || []).map(t => t.slice(0, 6)));
   const chunks = text.match(/[\s\S]{1,1200}/gu) || [];
   const ranked = chunks.map((text, index) => ({ text, index, score: [...terms].filter(t => text.toLowerCase().includes(t)).length }))
-    .filter(c => c.score > 0).sort((a, b) => b.score - a.score).slice(0, Math.floor(limit / 1201)).sort((a, b) => a.index - b.index);
-  return ranked.map(c => c.text).join('\n');
+    .filter(c => c.score > 0).sort((a, b) => b.score - a.score).slice(0, Math.max(0, Math.floor((limit - 180) / 1320))).sort((a, b) => a.index - b.index);
+  if (!ranked.length) return '';
+  return '[ВЫДЕРЖКА: часть исходного материала пропущена. Отсутствие сведений здесь не опровергает утверждение.]\n'
+    + ranked.map((c, i) => (i && c.index > ranked[i - 1].index + 1 ? '[ПРОПУСК МЕЖДУ ФРАГМЕНТАМИ]\n' : '')
+      + `[Фрагмент ${c.index + 1} из ${chunks.length}; исходные символы ${c.index * 1200 + 1}–${c.index * 1200 + c.text.length}]\n${c.text}`).join('\n');
 }
 
 export async function typesafeKey() {
