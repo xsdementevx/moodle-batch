@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { optionId, digest, questionKey } from '../../batch/answers.js';
 import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
 import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
-import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, webSolver } from '../../batch/web.js';
+import { parseWeb, parseConversation, webPrompt, readyWeb, selectWebReasoning, dispatchWeb, readWebResult, verifyWebParents, webSolver } from '../../batch/web.js';
 import { verifyEvidence } from '../../batch/evidence.js';
 
 test('confirmed memory requires neither journal access nor models and leaves conflicts unresolved', async () => {
@@ -336,6 +336,20 @@ test('continuation result reads the confirmed conversation when the visible tab 
   assert.equal(result.conversationUrl, 'https://chatgpt.com/c/owned-chat');
   await assert.rejects(readWebResult(page, [q('1')], 'nonce', ['wrong-parent'], 'https://chatgpt.com/c/owned-chat'), /FOREIGN_CONVERSATION/);
   await assert.rejects(readWebResult(page, [q('1')], 'nonce', ['parent'], 'https://other.example/c/owned-chat'), /SCOPE_MISMATCH/);
+});
+
+test('clarification validates the full pinned history without inspecting virtualized user turns', async () => {
+  const messages = [{ role: 'user', text: 'requestId first' }, { role: 'assistant', endTurn: true, text: 'answer' },
+    { role: 'user', text: 'requestId second' }];
+  const page = { url: () => 'https://chatgpt.com/c/owned-chat',
+    evaluate: async (_fn, path) => { assert.equal(path, '/c/owned-chat'); return messages; },
+    locator: () => assert.fail('virtualized history must not be read from DOM') };
+  await verifyWebParents(page, ['first', 'second']);
+  for (const parents of [[], ['first'], ['second', 'first'], ['first', 'foreign']]) {
+    await assert.rejects(verifyWebParents(page, parents), /GPT_WEB_FOREIGN_CONVERSATION/);
+  }
+  await assert.rejects(verifyWebParents({ ...page, url: () => 'https://other.example/c/owned-chat' }, ['first', 'second']), /SCOPE_MISMATCH/);
+  await assert.rejects(verifyWebParents({ ...page, evaluate: async () => ({ error: 'GPT_WEB_CONVERSATION_UNAVAILABLE' }) }, ['first']), /CONVERSATION_UNAVAILABLE/);
 });
 
 test('Jev rejects incomplete probabilities, insufficient context, partial multiple and excluded answers', () => {

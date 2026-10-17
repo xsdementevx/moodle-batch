@@ -168,7 +168,7 @@ export function parseConversation(messages, questions, requestId, parentRequestI
   return parseWeb(text, questions, requestId, [...new Set(sources)]);
 }
 
-async function readConversation(page, questions, requestId, parentRequestId, conversationUrl = page.url()) {
+async function readConversationMessages(page, conversationUrl) {
   const target = new URL(conversationUrl);
   if (!/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target.href)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   const messages = await page.evaluate(async pathname => {
@@ -209,7 +209,35 @@ async function readConversation(page, questions, requestId, parentRequestId, con
     return messages;
   }, target.pathname);
   if (messages.error) throw Object.assign(new Error(messages.error), { httpStatus: messages.httpStatus, retryMs: messages.retryMs });
-  return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl: target.href };
+  return messages;
+}
+
+async function readConversation(page, questions, requestId, parentRequestId, conversationUrl = page.url()) {
+  const messages = await readConversationMessages(page, conversationUrl);
+  return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl };
+}
+
+async function retryConversationRead(read) {
+  const deadline = Date.now() + 300000;
+  while (true) {
+    try { return await read(); }
+    catch (error) {
+      const retryable = error.message === 'GPT_WEB_RESPONSE_NOT_READY' || error.httpStatus === 429
+        || [500, 502, 503, 504].includes(error.httpStatus);
+      const delay = Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
+      if (!retryable || Date.now() + delay > deadline) throw error;
+      await new Promise(done => setTimeout(done, delay));
+    }
+  }
+}
+
+export async function verifyWebParents(page, parents) {
+  const target = page.url();
+  const messages = await retryConversationRead(() => readConversationMessages(page, target));
+  const users = messages.filter(message => message.role === 'user');
+  if (users.length !== parents.length || parents.some((id, i) => !users[i].text?.includes(id))) {
+    throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
+  }
 }
 
 export async function readWebResult(page, questions, requestId, parentRequestId, conversationUrl) {
@@ -218,21 +246,7 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
   if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target)) {
     // Modern ChatGPT may have no readable message DOM. Read only the pinned
     // conversation, without waiting five minutes for nonexistent DOM text.
-    const deadline = Date.now() + 300000;
-    while (true) {
-      try { return await readConversation(page, questions, requestId, parentRequestId, target); }
-      catch (error) {
-        const retryable = error.message === 'GPT_WEB_RESPONSE_NOT_READY' || error.httpStatus === 429
-          || [500, 502, 503, 504].includes(error.httpStatus);
-        const delay = Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
-        if (!retryable || Date.now() + delay > deadline) throw error;
-        if (error.httpStatus) {
-          await new Promise(done => setTimeout(done, delay));
-          continue;
-        }
-        await new Promise(done => setTimeout(done, 5000));
-      }
-    }
+    return retryConversationRead(() => readConversation(page, questions, requestId, parentRequestId, target));
   }
   try { await page.waitForFunction(id => [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')]
     .some(e => e.textContent.includes(id)) || /^\/c\/[a-zA-Z0-9-]+$/u.test(location.pathname), requestId, { timeout: 30000 });
@@ -272,17 +286,21 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   const users = page.locator('[data-message-author-role="user"],[data-content-search-turn-key]');
   const parents = parentRequestId ? [parentRequestId].flat() : [];
   const conversationUrl = parents.length ? page.url() : undefined;
-  if (parents.length) {
-    try {
-      await page.waitForFunction(ids => {
-        const nodes = [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')];
-        return nodes.length === ids.length && ids.every((id, i) => nodes[i].textContent.includes(id));
-      }, parents, { timeout: 15000 });
-    } catch { throw new Error('GPT_WEB_FOREIGN_CONVERSATION'); }
+  if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) {
+    await verifyWebParents(page, parents);
+  } else {
+    if (parents.length) {
+      try {
+        await page.waitForFunction(ids => {
+          const nodes = [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')];
+          return nodes.length === ids.length && ids.every((id, i) => nodes[i].textContent.includes(id));
+        }, parents, { timeout: 15000 });
+      } catch { throw new Error('GPT_WEB_FOREIGN_CONVERSATION'); }
+    }
+    const count = await users.count();
+    if (count !== parents.length) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
+    for (let i = 0; i < parents.length; i++) if (!(await users.nth(i).innerText()).includes(parents[i])) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
   }
-  const count = await users.count();
-  if (count !== parents.length) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
-  for (let i = 0; i < parents.length; i++) if (!(await users.nth(i).innerText()).includes(parents[i])) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
   // Hydration can briefly restore stale editor text before loading the empty draft.
   try { await page.waitForFunction(() => {
     const editor = document.querySelector('#prompt-textarea,[role="textbox"][contenteditable="true"]');
