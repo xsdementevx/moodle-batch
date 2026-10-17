@@ -31,6 +31,16 @@ export function reviewEvidenceSupport(decision, question) {
     ? question.options?.find(option => option.id === decision.answer?.[0])?.text : question.type === 'text' ? decision.answer : '';
   const unspecified = /(?:срок|врем[яени]|период)[^.!?]{0,100}(?:не\s+(?:определ|устан(?:ов|авл)|огранич|предусмотр|регламент)|отсутств)|(?:не\s+(?:определ|устан(?:ов|авл)|огранич|предусмотр|регламент)|отсутств)[^.!?]{0,100}(?:срок|врем[яени]|период)/iu;
   const evidence = Array.isArray(decision.evidence) ? decision.evidence : [decision.evidence];
+  // A citation naming one legal source cannot establish a compound list of sources.
+  if (question.type === 'choice' && /(?:закреплен|установлен|содержат)/iu.test(question.text || '')) {
+    const sources = [/конституци/iu, /трудов\S*\s+кодекс/iu, /международн\S*\s+(?:конвенци|норм|договор)/iu,
+      /федеральн\S*\s+закон/iu, /исполнительн\S*\s+власт/iu];
+    const quotes = evidence.map(item => item?.quote || '').join('\n');
+    if (sources.some(source => source.test(answer) && !source.test(quotes))) {
+      return { ...decision, status: 'needs_review', evidenceVerified: false, reviewReason: 'evidence_not_supportive',
+        reviewExplanation: 'Цитаты не подтверждают все названные в ответе источники права. Обоснуй весь вариант, а не отдельную его часть.' };
+    }
+  }
   if (typeof answer === 'string' && unspecified.test(answer)
       && !evidence.some(item => unspecified.test(item?.quote || ''))) {
     return { ...decision, status: 'needs_review', evidenceVerified: false, reviewReason: 'evidence_not_supportive' };

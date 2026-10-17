@@ -4,6 +4,23 @@ import { verifyEvidence, readRenderedSource, sourceText, decodeSource, reviewEvi
 import { chromium } from 'playwright';
 import { parseWeb } from '../../batch/web.js';
 
+test('a genuine quote about one legal source cannot verify a compound source answer or cached decision', async () => {
+  const quote = 'Основные принципы трудового права конкретизируют также ратифицированные Россией международные нормы по регулированию труда.';
+  const question = { slot: '1', type: 'choice', text: 'Отраслевые принципы трудового права закреплены:',
+    options: [{ id: 'sources', text: 'в международных конвенциях и Конституции РФ' }] };
+  const decision = { slot: '1', answer: ['sources'], status: 'candidate', evidenceVerified: true, sourceUrls: [],
+    evidence: { kind: 'context', quote } };
+  assert.equal(reviewEvidenceSupport(decision, question).reviewReason, 'evidence_not_supportive');
+  const [checked] = await verifyEvidence([decision], [question], { text: quote });
+  assert.equal(checked.status, 'needs_review');
+  assert.equal(checked.evidenceVerified, false);
+  const additional = 'Принципы закреплены в Конституции РФ.';
+  const [covered] = await verifyEvidence([{ ...decision, evidence: [decision.evidence, { kind: 'context', quote: additional }] }],
+    [question], { text: quote + ' ' + additional });
+  assert.equal(covered.status, 'candidate');
+  assert.equal(covered.evidenceVerified, true);
+});
+
 test('evidence requires a real quote from the correct context or an observed and readable web source', async () => {
   const quote = 'This is the actual source statement.';
   const contexts = { documents: { first: { text: quote }, second: { text: 'A different lecture, with different facts.' } } };
