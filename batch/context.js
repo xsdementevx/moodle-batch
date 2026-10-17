@@ -15,7 +15,7 @@ export async function extractMaterial(material, cacheDir) {
   const cacheFile = join(cacheDir, `${contentHash}.json`);
   try {
     const cached = JSON.parse(await readFile(cacheFile, 'utf8'));
-    if (cached.extractorVersion === 2 && cached.contentHash === contentHash && typeof cached.text === 'string') return { ...material, buffer: undefined, ...cached, cacheHit: true };
+    if (cached.extractorVersion === 3 && cached.contentHash === contentHash && typeof cached.text === 'string') return { ...material, buffer: undefined, ...cached, cacheHit: true };
   } catch { /* missing or invalid cache is rebuilt from the source bytes */ }
   let text, lineText;
   if (material.buffer.subarray(0, 5).toString() === '%PDF-') {
@@ -46,10 +46,10 @@ export async function extractMaterial(material, cacheDir) {
   } else if (material.htmlText !== null && material.htmlText !== undefined) text = material.htmlText;
   else if (material.mime.includes('text/plain')) text = material.buffer.toString('utf8');
   else throw new Error('UNSUPPORTED_MATERIAL');
-  text = normalize(text);
+  text = String(text).normalize('NFC').replace(/\r\n?/gu, '\n').split('\n').map(normalize).join('\n').replace(/\n{3,}/gu, '\n\n').trim();
   if (text.length > 500000) throw new Error('MATERIAL_TEXT_LIMIT');
   if (text.length < 100) throw new Error('MATERIAL_UNREADABLE');
-  const cached = { extractorVersion: 2, contentHash, text, ...(lineText ? { lineText } : {}) };
+  const cached = { extractorVersion: 3, contentHash, text, ...(lineText ? { lineText } : {}) };
   await writeFile(cacheFile, JSON.stringify(cached), { mode: 0o600 });
   return { ...material, buffer: undefined, ...cached, cacheHit: false };
 }
@@ -67,5 +67,13 @@ export async function loadContext(moodle, scope, cacheDir) {
   const ready = materials.filter(m => m.text);
   const text = ready.map(m => `${m.title}\n${m.text}`).join('\n\n');
   return { status: ready.length ? ready.length === materials.length ? 'ready' : 'partial' : 'missing', materials,
-    text, contextHash: ready.length ? digest(['context-v1', scope.origin, scope.userScope, scope.courseId, ready.map(m => m.contentHash)]) : null };
+    text, contextHash: ready.length ? digest(['context-v2-structure', scope.origin, scope.userScope, scope.courseId,
+      materials.map(m => [m.url, m.contentHash || null, m.status || 'ready'])]) : null };
+}
+
+export function contextManifest(context) {
+  const describe = doc => ({ status: doc.status || 'unknown', characters: doc.text?.length || 0,
+    materials: (doc.materials || []).map(m => ({ title: m.title?.slice(0, 300), status: m.text ? 'ready' : m.status || 'unreadable',
+      characters: m.text?.length || 0, ...(m.reason ? { reason: m.reason } : {}) })) });
+  return context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, describe(doc)])) : describe(context);
 }

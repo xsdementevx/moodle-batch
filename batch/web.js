@@ -9,6 +9,7 @@ import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
 import { verifyEvidence, sourceText, reviewEvidenceSupport } from './evidence.js';
 import { verifySemantics as validateSemantics } from './semantic.js';
+import { contextManifest } from './context.js';
 
 export function webPrompt(questions, context, requestId) {
   return 'Реши вопросы теста. Используй приложенный контекст и обязательно веб-поиск. '
@@ -52,7 +53,8 @@ export function webPrompt(questions, context, requestId) {
     + 'evidence_incomplete означает, что в массиве цитат не покрыты все строки matching или все выбранные варианты multiple: добавь недостающие проверенные цитаты и соответствующие ID.\n'
     + 'evidence_not_supportive означает, что цитата не доказывает выбранное утверждение. Найди прямое подтверждение именно этого факта; подлинность цитаты и высокая уверенность сами по себе недостаточны. Если его нет, needsReview=true.\n'
     + 'contextId связывает вопрос только с его материалом; контексты других тестов не применяй.\n'
-    + JSON.stringify({ requestId, context: context.documents ? undefined : selectContext(context.text, questions, 100000),
+    + 'materialManifest показывает доступность материалов. partial/missing означает неполный контекст; недоступный материал не считается прочитанным.\n'
+    + JSON.stringify({ requestId, materialManifest: contextManifest(context), context: context.documents ? undefined : selectContext(context.text, questions, 100000),
       contexts: context.documents ? Object.fromEntries(Object.entries(context.documents).map(([id, doc]) => [id, doc.text])) : undefined,
       questions: questions.map(q => ({ slot: q.slot, contextId: q.contextId, type: q.type, textFormat: q.textFormat || null, text: q.text,
         ...(q.type === 'text' && q.textFieldSize ? { answerSize: q.textFieldSize } : {}),

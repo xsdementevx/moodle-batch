@@ -1,4 +1,5 @@
 import { reviewEvidenceSupport } from './evidence.js';
+import { contextManifest } from './context.js';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -142,7 +143,7 @@ export function questionPackets(questions, context, limit = 100000, maxQuestions
   const packetSize = next => {
     const scoped = packetContext(context, next, Math.floor(limit * 0.8));
     return provider === 'jev' ? JSON.stringify(jevPacket(next, scoped.text).payload).length
-      : JSON.stringify(next.map(({ memory, ...q }) => ({ ...q, excludedAnswers: memory?.excludedAnswers }))).length + scoped.text.length;
+      : JSON.stringify(next.map(({ memory, ...q }) => ({ ...q, excludedAnswers: memory?.excludedAnswers }))).length + scoped.text.length + JSON.stringify(contextManifest(scoped)).length;
   };
   for (const q of questions) {
     const next = [...batch, q];

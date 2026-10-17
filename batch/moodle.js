@@ -107,7 +107,10 @@ export async function openParser() {
         if (!node) return '';
         const clone = node.cloneNode(true);
         clone.querySelectorAll('script,style,nav,form,noscript').forEach(n => n.remove());
-        return (clone.textContent || '').replace(/\s+/gu, ' ').trim();
+        clone.querySelectorAll('br').forEach(n => n.replaceWith('\n'));
+        clone.querySelectorAll('p,div,li,h1,h2,h3,h4,h5,h6,tr,blockquote,section').forEach(n => n.append('\n'));
+        clone.querySelectorAll('td,th').forEach(n => n.append('\t'));
+        return (clone.textContent || '').replace(/[^\S\n]+/gu, ' ').replace(/\n{3,}/gu, '\n\n').trim();
       }, html);
     },
     async identify(html) {

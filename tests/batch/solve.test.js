@@ -776,6 +776,23 @@ test('context discovery chooses materials preceding the exact test; text extract
     assert.notEqual(changed.contentHash, first.contentHash);
     const context = await loadContext({ materials: async () => refs, downloadMaterial: async () => material }, { origin: 'https://moodle.example', userScope: 'u1', courseId: '10' }, dir);
     assert.equal(context.status, 'ready');
+    const structured = await parser.materialText('<main id="region-main"><h2>Перечень</h2><ol><li>Первый пункт</li><li>Второй пункт</li></ol><p>' + 'Подробное объяснение. '.repeat(10) + '</p><script>untrusted()</script></main>');
+    assert.match(structured, /Перечень\nПервый пункт\nВторой пункт/);
+    assert.doesNotMatch(structured, /untrusted/);
+    const htmlMaterial = { ...material, buffer: Buffer.from(structured), mime: 'text/html', htmlText: structured };
+    const extracted = await extractMaterial(htmlMaterial, dir);
+    assert.match(extracted.text, /Перечень\nПервый пункт\nВторой пункт/);
+    await writeFile(join(dir, extracted.contentHash + '.json'), JSON.stringify({ ...extracted, extractorVersion: 2, text: 'Flattened stale cache' }));
+    assert.equal((await extractMaterial(htmlMaterial, dir)).cacheHit, false);
+    const partial = await loadContext({ materials: async () => [...refs, { url: 'https://moodle.example/unreadable', title: 'Missing lesson' }],
+      downloadMaterial: async ref => { if (ref.url === refs[0].url) return material; throw new Error('UNSUPPORTED_MATERIAL'); } },
+      { origin: 'https://moodle.example', userScope: 'u1', courseId: '10' }, dir);
+    const manifest = JSON.parse(webPrompt([q('1')], partial, 'manifest').split('\n').at(-1)).materialManifest;
+    assert.equal(manifest.status, 'partial');
+    assert.equal(manifest.materials[1].title, 'Missing lesson');
+    assert.equal(manifest.materials[1].status, 'unreadable');
+    assert.equal(manifest.materials[1].reason, 'UNSUPPORTED_MATERIAL');
+    assert.notEqual(partial.contextHash, context.contextHash);
     assert.equal((await loadContext({ materials: async () => refs, downloadMaterial: async () => { throw new Error(); } }, {}, dir)).status, 'missing');
   } finally { await parser.close(); await rm(dir, { recursive: true, force: true }); }
 });
