@@ -8,7 +8,7 @@ import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } fro
 import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
 import { verifyEvidence, sourceText, reviewEvidenceSupport } from './evidence.js';
-import { verifySemantics as validateSemantics } from './semantic.js';
+import { verifySemantics as validateSemantics, SEMANTIC_PROOF_POLICY } from './semantic.js';
 import { contextManifest } from './context.js';
 
 export function webPrompt(questions, context, requestId) {
@@ -441,7 +441,12 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }
         }
-        cached.result.answers = cached.result.answers.map(answer => reviewEvidenceSupport(reviewConfidence(answer), questions.find(q => q.slot === answer.slot)));
+        cached.result.answers = cached.result.answers.map(answer => {
+          const q = questions.find(q => q.slot === answer.slot);
+          const recheckProof = cached.result.sourcePolicy === 9 && q?.type === 'multiple' && answer.status === 'needs_review'
+            && answer.semanticVerified === false && answer.reviewReason === 'evidence_not_supportive' && answer.semanticPolicy !== SEMANTIC_PROOF_POLICY;
+          return reviewEvidenceSupport(reviewConfidence(recheckProof ? { ...answer, status: 'candidate', evidenceVerified: true } : answer), q);
+        });
         if (cached.result.answers.some(a => a.status === 'candidate' && a.evidenceVerified && a.semanticVerified !== true)) {
           cached.result.answers = await verifySemantics(cached.result.answers, questions, options.journalPath);
           await writeFile(options.journalPath + '.tmp', JSON.stringify(cached), { mode: 0o600 });

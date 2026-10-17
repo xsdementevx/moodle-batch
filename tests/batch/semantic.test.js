@@ -62,6 +62,29 @@ test('semantic packets split without truncating quotes and unknown judge outcome
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('multiple claims retain both verified premises without borrowing another question evidence', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-premises-'));
+  const premise = 'The following registration rule applies to Alpha and Beta.';
+  const otherPremise = 'This is a different rule for a separate question.';
+  const second = { ...q, slot: '2', text: 'Which objects belong in another category?' };
+  try {
+    const checked = await verifySemantics([{ ...answer, evidence: [{ quote: premise }] },
+      { ...answer, slot: '2', evidence: [{ quote: otherPremise }] }], [q, second], join(dir, 'proofs'), {
+      judge: async ({ payload }) => {
+        for (const spec of Object.values(payload.questions)) {
+          const local = spec.instructions.question === q.text ? premise : otherPremise;
+          const foreign = local === premise ? otherPremise : premise;
+          assert.ok(spec.instructions.quotes.includes(quote), 'retain the option-specific premise');
+          assert.ok(spec.instructions.quotes.includes(local), 'retain the question-wide premise');
+          assert.ok(!spec.instructions.quotes.includes(foreign), 'do not borrow another question proof');
+        }
+        return reply(payload, ['supported', 'refuted', 'supported', 'refuted']);
+      }
+    });
+    assert.ok(checked.every(a => a.semanticVerified));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('semantic confidence and probabilities must be valid and above the acceptance boundary', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-boundary-'));
   try {

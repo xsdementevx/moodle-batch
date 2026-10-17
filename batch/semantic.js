@@ -1,6 +1,8 @@
 import { checkpointed, requestJev } from './solve.js';
 import { digest } from './answers.js';
 
+export const SEMANTIC_PROOF_POLICY = 2;
+
 // A separate request sees the question and quotes, never the solver's confidence or verdict.
 export async function verifySemantics(answers, questions, journalPath, { judge = requestJev } = {}) {
   const specs = {}, bindings = [];
@@ -10,7 +12,8 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
     const evidence = Array.isArray(answer.evidence) ? answer.evidence : [answer.evidence];
     const claims = q.type === 'multiple' ? answer.optionChecks.map(check => ({
       option: q.options.find(o => o.id === check.optionId)?.text, selected: check.selected,
-      quotes: [check.evidence?.quote], known: q.memory?.multipleOptions?.[check.optionId] === check.selected,
+      quotes: [...new Set([check.evidence?.quote, ...evidence.map(e => e?.quote)].filter(Boolean))],
+      known: q.memory?.multipleOptions?.[check.optionId] === check.selected,
     })) : q.type === 'matching' ? q.rows.map(row => ({ row: row.text,
       option: row.options.find(o => o.id === answer.answer[row.id])?.text, selected: true,
       quotes: evidence.filter(e => !Array.isArray(e?.rowIds) || e.rowIds.includes(row.id)).map(e => e?.quote),
@@ -51,7 +54,7 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
   }
   return answers.map(answer => {
     const checks = bindings.filter(b => b.slot === answer.slot);
-    if (!checks.length) return answer.status === 'candidate' && answer.evidenceVerified ? { ...answer, semanticVerified: true } : answer;
+    if (!checks.length) return answer.status === 'candidate' && answer.evidenceVerified ? { ...answer, semanticVerified: true, semanticPolicy: SEMANTIC_PROOF_POLICY } : answer;
     const tooLarge = checks.some(b => oversized.has(b.id));
     const failures = checks.flatMap(b => {
       if (oversized.has(b.id)) return [];
@@ -67,7 +70,8 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
       return [`«${b.label}»: ${reason}.`];
     });
     const accepted = !tooLarge && !failures.length;
-    return { ...answer, semanticVerified: accepted, ...(accepted ? {} : { status: 'needs_review', evidenceVerified: false,
+    const { reviewReason, reviewExplanation, ...verified } = answer;
+    return { ...(accepted ? verified : answer), semanticVerified: accepted, semanticPolicy: SEMANTIC_PROOF_POLICY, ...(accepted ? {} : { status: 'needs_review', evidenceVerified: false,
       reviewReason: 'evidence_not_supportive', reviewExplanation: tooLarge ? 'Одна цитата проверки обоснований превышает лимит.'
         : failures.slice(0, 2).join(' ') + ' Перепроверь указанные варианты по прямым источникам; если доказательств нет, оставь вопрос нерешённым.' }) };
   });

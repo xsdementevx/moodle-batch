@@ -181,6 +181,32 @@ test('completed answers gain independent semantic checks without resending to Ch
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('a completed multiple proof is upgraded once without resending ChatGPT or reviving model uncertainty', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-proof-upgrade-'));
+  const question = q('1', { type: 'multiple' });
+  const answer = { slot: '1', provider: 'gpt_web', status: 'needs_review', answer: [options[0].id], confidence: .99,
+    evidenceVerified: false, semanticVerified: false, optionsVerified: true, reviewReason: 'evidence_not_supportive',
+    evidence: { kind: 'context', quote: 'A verified premise about both choices.' },
+    optionChecks: options.map((o, i) => ({ optionId: o.id, selected: i === 0, reason: 'Source proof.', evidence: { quote: 'Another verified premise about this option.' } })) };
+  const journalPath = join(dir, 'web.json'); let checks = 0;
+  const solve = webSolver({ extension: true, connect: () => assert.fail('do not resend to ChatGPT'),
+    verifySemantics: async answers => {
+      checks++; assert.equal(answers[0].status, 'candidate'); assert.equal(answers[0].evidenceVerified, true);
+      return answers.map(a => ({ ...a, status: 'needs_review', evidenceVerified: false, semanticVerified: false, semanticPolicy: 2 }));
+    } });
+  try {
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [answer] } }));
+    assert.equal((await solve([question], {}, { journalPath }))[0].status, 'needs_review');
+    assert.equal((await solve([question], {}, { journalPath }))[0].status, 'needs_review');
+    assert.equal(checks, 1, 'a rejected upgraded proof is not checked endlessly');
+    for (const override of [{ reviewReason: 'model_uncertain' }, { confidence: .89 }, { confidence: undefined }, { semanticVerified: undefined }]) {
+      await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [{ ...answer, ...override }] } }));
+      assert.equal((await solve([question], {}, { journalPath }))[0].status, 'needs_review');
+      assert.equal(checks, 1, 'other refusals remain blocked');
+    }
+  } finally { await solve.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('extension reuses one attachment, closes its own pages and detaches without closing the personal context', async () => {
   const events = [];
   const solve = webSolver({ extension: true, connect: async () => {
