@@ -677,6 +677,26 @@ test('independent context packets get Instant answers before clarification and r
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('after Instant, a nearly ready packet is clarified before a packet with more unresolved questions', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-review-priority-'));
+  const context = { documents: { first: { status: 'missing', text: 'Alpha '.repeat(10000), contextHash: 'first' },
+    second: { status: 'missing', text: 'Beta '.repeat(12000), contextHash: 'second' } } };
+  const questions = [q('1', { contextId: 'first' }), q('2', { contextId: 'first' }),
+    q('3', { contextId: 'second', quizId: '21' })];
+  const calls = [];
+  try {
+    const result = await solveTest(questions, context, { journalDir: dir, web: async (batch, _, opts) => {
+      calls.push([opts.reasoning, batch.map(q => q.slot)]);
+      return batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: [options[0].id], confidence: .99,
+        status: opts.reasoning === 'instant' ? 'needs_review' : 'candidate',
+        evidenceVerified: opts.reasoning !== 'instant', semanticVerified: opts.reasoning !== 'instant',
+        conversationUrl: `https://chatgpt.com/c/${q.contextId}` }));
+    } });
+    assert.deepEqual(calls, [['instant', ['1', '2']], ['instant', ['3']], ['medium', ['3']], ['medium', ['1', '2']]]);
+    assert.ok(result.every(q => q.decision.status === 'candidate'));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('borderline completed answers cannot bypass Medium and High clarification through the verified cache', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-confidence-'));
   const question = q('20:30:1'), context = { status: 'missing', text: '', contextHash: null };

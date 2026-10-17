@@ -289,7 +289,8 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       packets.push({ batch, scoped, id, results, accept });
     }
     // Give every independent context its first answer before spending time on clarification.
-    for (const packet of packets) {
+    const reviewCount = packet => packet.batch.filter(q => decisions.get(q.slot)?.status === 'needs_review').length;
+    for (const packet of packets.sort((a, b) => reviewCount(a) - reviewCount(b))) {
       const { batch, scoped, id, accept } = packet;
       let { results } = packet;
       const reviewQuestion = q => {

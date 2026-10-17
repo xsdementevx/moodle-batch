@@ -32,6 +32,7 @@ test('service runs one durable job, rejects another and stops retries after veri
     service = await openService({ ...deps(root), runner: async (moodle, store, quizId, options) => {
       assert.deepEqual(options.importedReviews['20'], [`${scope.origin}/mod/quiz/review.php?attempt=1&cmid=20`]);
       calls++; await options.progress('solving', { quizId, provider: 'Jev', questions: 1, context: 'private synthetic context' });
+      await options.progress('solving', { quizId, provider: 'Jev', questions: 1, context: 'updated private context' });
       await gate; return { quizId: '20', courseId: '10', percent: calls === 1 ? 80 : 100, gradePercent: calls === 1 ? 80 : 100 };
     } });
     await service.refresh();
@@ -46,6 +47,7 @@ test('service runs one durable job, rejects another and stops retries after veri
     const events = service.state().jobs[0].events;
     assert.equal(events[0].kind, 'start');
     assert.equal(events.filter(e => e.kind === 'result').length, 2);
+    assert.deepEqual(events.filter(e => e.stage === 'solving').map(e => e.round), [1, 2], 'duplicate stages collapse but a new round remains visible');
     assert.equal(events.at(-1).kind, 'complete');
     assert.equal(JSON.stringify(events).includes('private synthetic context'), false);
     assert.equal(service.state().overview.courses[0].quizzes[0].percent, 100);

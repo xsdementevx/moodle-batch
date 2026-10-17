@@ -25,6 +25,9 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
       if (detail[key] !== undefined) item[key] = detail[key];
     }
     job.events ||= [];
+    const previous = job.events.at(-1);
+    if (kind === 'stage' && previous?.kind === 'stage'
+      && JSON.stringify({ ...previous, at: null }) === JSON.stringify({ ...item, at: null })) return;
     job.events.push(item);
     // ponytail: latest 300 events per job; result history remains complete.
     if (job.events.length > 300) job.events.shift();
