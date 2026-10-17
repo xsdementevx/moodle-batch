@@ -933,6 +933,9 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
     assert.equal(pending.conversationUrl, 'https://chatgpt.com/');
     assert.deepEqual(pending.questionIds, ['quiz:attempt:1']);
     assert.deepEqual(pending.bindings, [{ slot: '1', fingerprint: 'binding' }]);
+    assert.deepEqual(pending.request.parentRequestId, ['nonce', 'second', 'third']);
+    assert.ok(pending.request.prompt.includes('send-failed'));
+    assert.equal(pending.failureStage, 'sending');
     await assert.rejects(checkpointed(failedPath, () => assert.fail('unknown click must not be retried')), /UNKNOWN_MODEL_OUTCOME/);
     assert.equal(await page.evaluate(() => window.dispatches), 3);
   } finally { await browser.close(); await rm(dir, { recursive: true, force: true }); }

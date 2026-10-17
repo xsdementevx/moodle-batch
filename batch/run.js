@@ -142,8 +142,18 @@ export async function runQuizzes(moodle, store, quizIds, options = {}) {
     catch (error) { await failed(quizId, error); }
   }
   // A pending request stops its own test, while other tests retain shared batching.
-  const blocked = await pendingModelTests(prepared.flatMap(p => p.questions), join(options.root, 'operations'));
-  for (const quizId of blocked) await failed(quizId, new Error('UNKNOWN_MODEL_OUTCOME'));
+  const recoveryErrors = new Map();
+  const recoveryQuestions = prepared.flatMap(p => p.questions.map(q => ({ ...q, nativeSlot: q.slot,
+    slot: `${q.quizId}:${q.attemptId}:${q.slot}`, contextId: q.quizId })));
+  const blocked = await pendingModelTests(recoveryQuestions, join(options.root, 'operations'), {
+    context: { documents: Object.fromEntries(prepared.map(p => [p.test.quizId, p.context])) },
+    stopped: options.stopped, onError: (quizId, error) => recoveryErrors.set(quizId, error),
+    recover: options.web?.recover && (async (path, scope) => {
+      await options.progress?.('recovering', { provider: 'Web' });
+      await options.web.recover(path, { ...scope, onWait: detail => options.progress?.('recovering', { provider: 'Web', ...detail }) });
+    }),
+  });
+  for (const quizId of blocked) await failed(quizId, recoveryErrors.get(quizId) || new Error('UNKNOWN_MODEL_OUTCOME'));
   const eligible = prepared.filter(p => !blocked.has(p.test.quizId));
   if (!eligible.length) return results;
   const byReadyTime = p => p.test.attemptTiming.startedAt + (options.secondsPerQuestion || 0) * p.questions.length * 1000;

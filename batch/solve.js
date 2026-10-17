@@ -1,4 +1,4 @@
-import { reviewEvidenceSupport } from './evidence.js';
+import { reviewEvidenceSupport, evidenceText } from './evidence.js';
 import { contextManifest } from './context.js';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -135,7 +135,7 @@ export async function requestJev(packet, { key, fetchImpl = fetch } = {}) {
   return response.json();
 }
 
-export async function checkpointed(path, dispatch, questionIds, bindings) {
+export async function checkpointed(path, dispatch, questionIds, bindings, pending = {}) {
   try {
     const saved = JSON.parse(await readFile(path, 'utf8'));
     if (saved.state === 'complete') return saved.result;
@@ -144,7 +144,7 @@ export async function checkpointed(path, dispatch, questionIds, bindings) {
   const temp = `${path}.tmp`;
   await mkdir(dirname(path), { recursive: true });
   // Exclusive creation also prevents concurrent processes from dispatching the same packet.
-  await writeFile(path, JSON.stringify({ state: 'pending', questionIds, bindings }), { flag: 'wx', mode: 0o600 });
+  await writeFile(path, JSON.stringify({ ...pending, state: 'pending', questionIds, bindings }), { flag: 'wx', mode: 0o600 });
   const result = await dispatch();
   await writeFile(temp, JSON.stringify({ state: 'complete', result, bindings }), { mode: 0o600 });
   await rename(temp, path);
@@ -189,14 +189,42 @@ export function questionFingerprint(q, context) {
     ...(q.memory?.multipleOptions ? [q.memory.multipleOptions] : [])]);
 }
 
-export async function pendingModelTests(questions, journalDir) {
+export function recoveredScopeMatches(result, q, context) {
+  const original = result.recoveryQuestions?.find(item => item.slot === q.slot);
+  if (!original || (context.documents && original.contextId !== q.contextId)) return false;
+  if (JSON.stringify([original.excludedAnswers || [], original.multipleMemory || null, original.matchingMemory || null])
+      !== JSON.stringify([q.memory?.excludedAnswers || [], q.memory?.multipleOptions || null, q.memory?.matchingRows || null])) return false;
+  const project = item => ({ type: item.type, text: item.text, textFormat: item.textFormat || null,
+    answerSize: item.answerSize || item.textFieldSize || null,
+    options: item.options.map(o => ({ id: o.id, text: o.text })),
+    rows: item.rows.map(r => ({ id: r.id, text: r.text, options: r.options.map(o => ({ id: o.id, text: o.text })) })) });
+  if (JSON.stringify(project(original)) !== JSON.stringify(project(q))) return false;
+  const answer = result.answers.find(a => a.slot === q.slot);
+  const quotes = answer?.status === 'candidate' && answer.evidenceVerified
+    ? [...[answer.evidence].flat().filter(Boolean), ...(answer.optionChecks || []).map(c => c.evidence).filter(Boolean)] : [];
+  const doc = context.documents?.[q.contextId] || context;
+  return quotes.filter(e => e.kind === 'context').every(e => (!context.documents || e.contextId === q.contextId)
+    && evidenceText(doc.text || '').includes(evidenceText(e.quote)));
+}
+
+export async function pendingModelTests(questions, journalDir, { recover, onError, context, stopped = () => false } = {}) {
   const unresolved = questions.filter(q => q.memory?.status === 'unresolved');
   const blocked = new Set();
   const files = await readdir(journalDir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
   for (const name of files.filter(modelJournal)) {
-    const saved = JSON.parse(await readFile(join(journalDir, name), 'utf8'));
+    const path = join(journalDir, name);
+    let saved = JSON.parse(await readFile(path, 'utf8'));
     if (saved.state !== 'pending') continue;
-    for (const q of unresolved) if (!saved.questionIds || saved.questionIds.includes(`${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`)) blocked.add(q.quizId);
+    const affected = unresolved.filter(q => !saved.questionIds || saved.questionIds.includes(`${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`));
+    if (!affected.length) continue;
+    if (recover && saved.requestId && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(saved.conversationUrl || '')) {
+      try {
+        if (stopped()) throw new Error('STOPPED');
+        await recover(path, { questions: affected, context });
+        saved = JSON.parse(await readFile(path, 'utf8'));
+      } catch (error) { for (const quizId of new Set(affected.map(q => q.quizId))) await onError?.(quizId, error); }
+    }
+    if (saved.state === 'pending') for (const q of affected) blocked.add(q.quizId);
   }
   return blocked;
 }
@@ -208,6 +236,10 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
   const notify = () => onAnswers(questions.map(q => ({ ...q, decision: decisions.get(q.slot) || null })));
   const unresolved = questions.filter(q => q.memory?.status === 'unresolved');
   if (!unresolved.length) return questions.map(q => ({ ...q, decision: decisions.get(q.slot) || null }));
+  let recoveryError;
+  const blocked = await pendingModelTests(questions, journalDir, { recover: web?.recover, stopped, context,
+    onError: (quizId, error) => { recoveryError ??= error; } });
+  if (blocked.size) throw recoveryError || new Error('UNKNOWN_MODEL_OUTCOME');
   const identity = q => `${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`;
   const questionIds = new Set(unresolved.map(identity));
   // Regrouping or changing reasoning must not bypass a previously pending request.
@@ -219,12 +251,25 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
       for (const q of unresolved) {
         const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
+        if (binding && saved.result.recovered && !recoveredScopeMatches(saved.result, q, context)) {
+          if (!decisions.has(q.slot)) decisions.set(q.slot, { provider: 'gpt_web', answer: null, status: 'needs_review',
+            reviewReason: 'recovery_scope_mismatch', reviewExplanation: 'Сохранённый вопрос или цитата не совпадают с текущим тестом.', cached: true });
+          continue;
+        }
         const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true && a.semanticVerified === true && reviewEvidenceSupport(a, q).status === 'candidate'
           && (!(q.type === 'multiple' || negativeQuestion(q)) || /^(?:medium|high|Средний|Высокий)$/iu.test(a.reasoning || saved.result.reasoning || '')));
         if (answer) {
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,
             ...(answer.reasoning || saved.result.reasoning ? { reasoning: answer.reasoning || saved.result.reasoning } : {}) }); }
           catch { /* a malformed old result never becomes a reusable answer */ }
+        } else if (binding && saved.result.recovered && !decisions.has(q.slot)) {
+          const raw = saved.result.answers.find(a => a.slot === q.slot);
+          const review = raw && reviewEvidenceSupport(reviewConfidence(raw), q);
+          // A completed uncertain reply is a result, not permission to resend the
+          // same questions under a different packet hash after regrouping.
+          if (review) decisions.set(q.slot, { ...review, status: 'needs_review', cached: true,
+            reviewReason: review.reviewReason || (q.type === 'multiple' ? 'multiple_completeness' : negativeQuestion(q) ? 'negative_question' : 'evidence_not_supportive'),
+            reasoning: review.reasoning || saved.result.reasoning });
         }
       }
     }

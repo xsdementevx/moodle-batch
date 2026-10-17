@@ -1,10 +1,10 @@
-import { readFile, access, writeFile, rename, appendFile, mkdir } from 'node:fs/promises';
+import { readFile, access, writeFile, rename, appendFile, mkdir, readdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
-import { dirname } from 'node:path';
+import { dirname, join, basename } from 'node:path';
 import { observeWebHistory, nativeWebHistory, clearWebHistory, armWebGeneration, waitForWebGeneration, rememberWebRead, checkWebReadLimit } from './web-history.js';
 import { answerSignature, isExcludedAnswer } from './answers.js';
 import { cookieState, openParser } from './moodle.js';
-import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } from './solve.js';
+import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence, recoveredScopeMatches } from './solve.js';
 import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
 import { verifyEvidence, sourceText, reviewEvidenceSupport } from './evidence.js';
@@ -378,30 +378,117 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   catch { throw new Error('GPT_WEB_SEND_UNAVAILABLE'); }
   const snapshot = await checkpointed(journalPath, async () => {
     clearWebHistory(page);
+    let failureStage = 'sending';
+    const pending = { state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url(),
+      request: { prompt, reasoning: effort, parentRequestId: parents } };
+    const savePending = async () => {
+      await writeFile(journalPath + '.tmp', JSON.stringify(pending), { mode: 0o600 });
+      await rename(journalPath + '.tmp', journalPath);
+    };
     try {
       armWebGeneration(page);
       await send.click();
       await waitForWebGeneration(page);
+      failureStage = 'reading'; pending.conversationUrl = conversationUrl || page.url(); await savePending();
       const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl, onWait);
+      pending.conversationUrl = result.conversationUrl;
+      pending.response = structuredClone(result); failureStage = 'evidence'; await savePending();
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
+      pending.evidence = structuredClone(result.answers); failureStage = 'semantic'; await savePending();
       if (verifySemantics) result.answers = await verifySemantics(result.answers, questions, journalPath);
       return { ...result, reasoning: effort, sourcePolicy: 9 };
     } catch (error) {
-      await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url() }), { mode: 0o600 });
+      pending.conversationUrl = pending.response?.conversationUrl || conversationUrl || page.url(); pending.failureStage = failureStage;
+      pending.failureCode = /^[A-Z][A-Z_0-9]+$/u.test(error.message || '') ? error.message : 'UNKNOWN_WEB_OUTCOME';
+      await savePending();
       if (/^[A-Z_]+$/u.test(error.message || '')) throw error;
       throw new Error('UNKNOWN_WEB_OUTCOME');
     }
-  }, questionIds, bindings);
+  }, questionIds, bindings, { requestId, conversationUrl: conversationUrl || page.url(), request: { prompt, reasoning: effort, parentRequestId: parents } });
   return snapshot.answers.map(answer => ({ ...answer, conversationUrl: snapshot.conversationUrl,
     ...(snapshot.reasoning ? { reasoning: snapshot.reasoning } : {}) }));
+}
+
+// Recover the whole original packet before projecting onto current native bindings.
+// This path never dispatches a ChatGPT message or changes its draft.
+export async function recoverWeb(journalPath, { readMessages, verifySemantics = validateSemantics, onWait, questions: currentQuestions, context: currentContext } = {}) {
+  const original = await readFile(journalPath, 'utf8');
+  const saved = JSON.parse(original);
+  if (saved.state === 'complete') return saved.result;
+  const validId = id => typeof id === 'string' && /^[a-f0-9]{64}$/u.test(id);
+  const reject = () => { throw new Error('GPT_WEB_RECOVERY_SCOPE_MISMATCH'); };
+  if (saved.state !== 'pending' || !validId(saved.requestId) || basename(journalPath) !== saved.requestId + '.json'
+      || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(saved.conversationUrl || '')) reject();
+  const messages = saved.response && saved.request?.prompt ? null
+    : await retryConversationRead(() => readMessages(saved.conversationUrl, saved.requestId), onWait);
+  let packets;
+  try { packets = (messages ? messages.filter(m => m.role === 'user').map(m => m.text) : [saved.request.prompt])
+    .map(text => JSON.parse(text.split('\n').at(-1))); } catch { reject(); }
+  const packet = packets.at(-1);
+  const parents = messages ? packets.slice(0, -1).map(p => p.requestId) : saved.request.parentRequestId;
+  if (!Array.isArray(parents) || !parents.every(validId) || !validId(packet?.requestId)
+      || packet.requestId !== saved.requestId || new Set([...parents, packet.requestId]).size !== parents.length + 1) reject();
+  if (saved.request && (JSON.stringify(saved.request.parentRequestId) !== JSON.stringify(parents)
+      || (messages && messages.filter(m => m.role === 'user').at(-1).text !== saved.request.prompt))) reject();
+  for (const id of parents) {
+    const parent = JSON.parse(await readFile(join(dirname(journalPath), id + '.json'), 'utf8'));
+    if (parent.state !== 'complete' || parent.result?.conversationUrl !== saved.conversationUrl) reject();
+  }
+  if (!Array.isArray(packet.questions) || !packet.questions.length || !Array.isArray(saved.bindings)
+      || !Array.isArray(saved.questionIds)) reject();
+  const slots = packet.questions.map(q => q.slot);
+  if (new Set(slots).size !== slots.length || slots.length !== saved.bindings.length || slots.length !== saved.questionIds.length
+      || new Set(saved.bindings.map(b => b.slot)).size !== slots.length || new Set(saved.questionIds).size !== slots.length
+      || slots.some(slot => !/^\d+:\d+:\d+$/u.test(slot) || !saved.questionIds.includes(slot)
+        || !saved.bindings.some(b => b.slot === slot && validId(b.fingerprint)))) reject();
+  const questions = packet.questions.map(q => {
+    const [quizId, attemptId, nativeSlot] = q.slot.split(':');
+    if (!['choice', 'multiple', 'matching', 'text'].includes(q.type) || typeof q.text !== 'string'
+        || !Array.isArray(q.options) || !Array.isArray(q.rows)
+        || q.options.some(o => typeof o.id !== 'string' || typeof o.text !== 'string')
+        || new Set(q.options.map(o => o.id)).size !== q.options.length
+        || q.rows.some(r => typeof r.id !== 'string' || typeof r.text !== 'string' || !Array.isArray(r.options)
+          || r.options.some(o => typeof o.id !== 'string' || typeof o.text !== 'string'))
+        || (packet.contexts && (q.contextId !== quizId || typeof packet.contexts[q.contextId] !== 'string'))) reject();
+    return { slot: q.slot, quizId, attemptId, nativeSlot, contextId: q.contextId, type: q.type, text: q.text,
+      textFormat: q.textFormat, textFieldSize: q.answerSize, options: q.options, rows: q.rows,
+      memory: { excludedAnswers: q.excludedAnswers || [], multipleOptions: q.multipleMemory, matchingRows: q.matchingMemory } };
+  });
+  const context = packet.contexts ? { documents: Object.fromEntries(Object.entries(packet.contexts).map(([id, text]) => [id, { text }])) }
+    : { text: packet.context };
+  if (currentQuestions && currentContext && currentQuestions.some(q => !recoveredScopeMatches({ recoveryQuestions: packet.questions, answers: [] }, q, currentContext))) reject();
+  const parsed = messages ? parseConversation(messages, questions, saved.requestId, parents) : saved.response.answers;
+  if (!Array.isArray(parsed) || parsed.length !== slots.length || new Set(parsed.map(a => a.slot)).size !== slots.length
+      || parsed.some(a => !slots.includes(a.slot))) reject();
+  // A changed proof payload must never bypass an older unknown Jev outcome.
+  for (const name of (await readdir(dirname(journalPath))).filter(n => /^[a-f0-9]{64}\.json\.semantic-[a-f0-9]{64}\.json$/u.test(n))) {
+    const pending = JSON.parse(await readFile(join(dirname(journalPath), name), 'utf8'));
+    if (pending.state === 'pending' && (!pending.questionIds || pending.questionIds.some(id => slots.includes(id)))) throw new Error('UNKNOWN_MODEL_OUTCOME');
+  }
+  let answers;
+  if (saved.evidence) answers = saved.evidence;
+  else {
+    const parser = await openParser();
+    try { answers = await verifyEvidence(parsed, questions, context, { textFromHtml: html => parser.sourceText(html) }); }
+    finally { await parser.close(); }
+  }
+  if (!Array.isArray(answers) || answers.length !== slots.length || new Set(answers.map(a => a.slot)).size !== slots.length
+      || answers.some(a => !slots.includes(a.slot))) reject();
+  answers = await verifySemantics(answers, questions, journalPath);
+  const result = { answers, conversationUrl: saved.conversationUrl, reasoning: saved.request?.reasoning || ['Instant', 'Medium', 'High'][parents.length],
+    sourcePolicy: 9, recovered: true, recoveryQuestions: packet.questions };
+  if (await readFile(journalPath, 'utf8') !== original) throw new Error('GPT_WEB_RECOVERY_JOURNAL_CHANGED');
+  await writeFile(journalPath + '.tmp', JSON.stringify({ state: 'complete', bindings: saved.bindings, result }), { mode: 0o600 });
+  await rename(journalPath + '.tmp', journalPath);
+  return result;
 }
 
 export function webSolver({ authFile, profileDir, visible = false, executablePath, extension = false, connect = connectExtension, verifySemantics = validateSemantics }) {
   let attachment;
   const conversations = new Map();
-  async function extensionPage(continueUrl) {
+  async function extensionPage(continueUrl, recovery = false) {
     // Recover only before dispatch. Pending journals above still forbid resending.
     for (let attempt = 0; attempt < 2; attempt++) {
       attachment ??= connect({ executablePath, profileDir });
@@ -410,7 +497,8 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
       catch (error) { attachment = undefined; throw error; }
       const context = browser.contexts()[0];
       if (context && browser.isConnected?.() !== false) {
-        const previous = conversations.get(continueUrl);
+        const previous = conversations.get(continueUrl)
+          || (recovery && context.pages?.().find(page => page.url() === continueUrl));
         const reused = previous && !previous.isClosed() && previous.url() === continueUrl;
         if (previous && !reused) conversations.delete(continueUrl);
         return { browser, page: reused ? previous : await context.newPage(), reused };
@@ -456,7 +544,11 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
         ...(cached.result.conversationUrl ? { conversationUrl: cached.result.conversationUrl } : {}),
         ...(cached.result.reasoning ? { reasoning: cached.result.reasoning } : {}) }));
       }
-      if (cached.state === 'pending') throw new Error('UNKNOWN_MODEL_OUTCOME');
+      if (cached.state === 'pending') {
+        if (!solve.recover || !cached.requestId || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(cached.conversationUrl || '')) throw new Error('UNKNOWN_MODEL_OUTCOME');
+        await solve.recover(options.journalPath, { questions, context, onWait: options.onWait });
+        return solve(questions, context, options);
+      }
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
     if (extension) {
       const { browser, page, reused } = await extensionPage(options.continueUrl);
@@ -501,6 +593,24 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
       if (options.continueUrl && page.url() !== options.continueUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
       return await dispatchWeb(page, questions, context, options);
     } finally { await browserContext?.close(); await browser?.close(); }
+  };
+  if (extension) solve.recover = async (journalPath, { onWait, questions, context } = {}) => {
+    let owned;
+    try {
+      return await recoverWeb(journalPath, { verifySemantics, onWait, questions, context, readMessages: async (url, requestId) => {
+        if (!owned) {
+          owned = await extensionPage(url, true);
+          if (!owned.reused) await openWebPage(owned.page, url, onWait);
+          await closeExtensionTabs(owned.browser);
+        }
+        return readConversationMessages(owned.page, url, requestId);
+      } });
+    } finally {
+      if (owned) {
+        if (!owned.reused) await owned.page.close().catch(() => {});
+        await closeExtensionTabs(owned.browser);
+      }
+    }
   };
   solve.release = async () => {
     for (const [url, page] of conversations) {

@@ -27,7 +27,7 @@ const api = async (route, body) => {
 };
 const busy = () => current?.jobs.find(job => ['queued', 'running'].includes(job.status));
 const belowMaximum = quiz => Number.isFinite(quiz.percent) && quiz.percent >= 0 && quiz.percent < 100;
-const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', web_wait: 'Ожидаю доступ к ответу ChatGPT', waiting: 'Жду минимальное время попытки', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
+const stages = { reading: 'Получаю тест', starting: 'Открываю попытку', context: 'Читаю материалы', solving: 'Решаю вопросы', recovering: 'Восстанавливаю сохранённый ответ ChatGPT', web_wait: 'Ожидаю доступ к ответу ChatGPT', waiting: 'Жду минимальное время попытки', submitting: 'Отправляю ответы', verifying: 'Проверяю оценку' };
 const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на компьютере.', USER_SCOPE_MISMATCH: 'Аккаунт Moodle отличается от аккаунта сервиса.',
   SESSION_CHANGED: 'Аккаунт Moodle изменился. Обновите панель перед запуском.',
   SESSION_BUSY: 'Смена сессии ожидает завершения текущего действия. Повторите обновление.',
