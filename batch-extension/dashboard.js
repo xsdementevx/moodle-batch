@@ -111,7 +111,7 @@ function showProgress() {
     $('job-detail').textContent += ` · минимум ${duration(detail.minimumSeconds)} · прошло ${duration((Date.now() - detail.startedAt) / 1000)} · осталось ${duration((detail.readyAt - Date.now()) / 1000)}${detail.timingSource === 'first_seen' ? ' · отсчёт с первого обнаружения' : ''}`;
   }
   if (job.status === 'running' && detail?.stage === 'web_wait') {
-    $('job-detail').textContent += ` · ${detail.httpStatus === 429 ? 'ChatGPT ограничил частоту чтения' : 'ChatGPT временно недоступен'} (HTTP ${detail.httpStatus}) · следующая проверка через ${duration((detail.retryAt - Date.now()) / 1000)}. Читаю беседу без повторной отправки запроса модели.`;
+    $('job-detail').textContent += !detail.httpStatus ? ' · Жду загрузку исходного чата в той же вкладке (до 5 минут).' : ` · ${detail.httpStatus === 429 ? 'ChatGPT ограничил частоту чтения' : 'ChatGPT временно недоступен'} (HTTP ${detail.httpStatus}) · следующая проверка через ${duration((detail.retryAt - Date.now()) / 1000)}. Читаю беседу без повторной отправки запроса модели.`;
   }
   const processed = job.results.filter(q => q.attempts.length || q.error).length;
   $('job-progress').max = job.quizIds.length; $('job-progress').value = processed;
@@ -124,6 +124,7 @@ function eventText(event) {
   if (event.kind === 'stop') return 'Запрошена остановка после текущего действия';
   if (event.kind === 'stopped') return 'Запуск остановлен';
   if (event.kind === 'complete') return 'Запуск завершён';
+  if (event.stage === 'web_wait' && !event.httpStatus) return 'Жду загрузку исходного чата в той же вкладке (до 5 минут)';
   if (event.stage === 'web_wait') return `Ожидаю доступ к ответу ChatGPT · HTTP ${event.httpStatus} · следующая проверка ${time(new Date(event.retryAt).toISOString())}`;
   if (event.stage === 'waiting') return `Тест ${event.quizId}: ожидание до ${time(new Date(event.readyAt).toISOString())} · минимум ${duration(event.minimumSeconds)}${event.timingSource === 'first_seen' ? ' · с первого обнаружения' : ''}`;
   return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.round ? `попытка ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : ''].filter(Boolean).join(' · ');

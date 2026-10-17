@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { webSolver } from '../../batch/web.js';
+import { webSolver, openWebPage } from '../../batch/web.js';
 
 test('clarification reuses its owned conversation tab without navigation and preserves a user draft', async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-tabs-'));
@@ -60,4 +60,30 @@ test('clarification reuses its owned conversation tab without navigation and pre
     assert.equal(await owned.locator('[role=textbox]').innerText(), 'Personal draft');
     assert.equal(context.pages().length, 2, 'release closes only completed owned tabs');
   } finally { await solve?.close(); await browser.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('a delayed original chat becomes ready in place without a reload or extra history request', async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const target = 'https://chatgpt.com/c/original-chat', requests = [], waits = [];
+  try {
+    await page.route('https://chatgpt.com/**', async route => {
+      requests.push(route.request().url());
+      assert.equal(route.request().url(), target);
+      await route.fulfill({ contentType: 'text/html', body: '<title>ChatGPT</title><p id="loading">Loading conversation...</p>' });
+    });
+    const pending = openWebPage(page, target, detail => waits.push(detail));
+    await page.locator('#loading').waitFor();
+    await page.waitForFunction(() => document.readyState === 'complete');
+    await page.evaluate(() => {
+      document.querySelector('#loading').remove();
+      const editor = document.createElement('div'); editor.contentEditable = 'true';
+      editor.setAttribute('role', 'textbox'); document.body.append(editor);
+    });
+    await pending;
+    assert.deepEqual(requests, [target]);
+    assert.equal(page.url(), target); assert.equal(browser.contexts()[0].pages().length, 1);
+    assert.ok(waits[0].retryAt); assert.equal(waits.at(-1), null);
+  } finally { await browser.close(); }
 });

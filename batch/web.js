@@ -99,7 +99,7 @@ export async function readyWeb(page) {
   if (/just a moment|checking your browser|verify you are human|один момент|проверка браузера/iu.test(await page.title())
       || await page.locator('iframe[src*="challenges.cloudflare.com"]').count()) throw new Error('GPT_WEB_CHALLENGE');
   const composer = page.locator('#prompt-textarea:visible,[contenteditable="true"][role="textbox"]:visible').first();
-  try { await composer.waitFor({ state: 'visible', timeout: 15000 }); }
+  try { await composer.waitFor({ state: 'visible', timeout: 300000 }); }
   catch { throw new Error('GPT_WEB_LOGIN_OR_UI_UNAVAILABLE'); }
   if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('GPT_WEB_SCOPE_MISMATCH');
   return composer;
@@ -240,34 +240,20 @@ async function retryConversationRead(read, onWait) {
   } finally { if (waiting) await onWait?.(null); }
 }
 
-// Navigation can fail before a composer exists. Retry loading the pinned history;
-// the model request remains behind dispatchWeb's journal and parent checks.
+// Navigate once. Hydration must finish in this original tab, without reloads.
 export async function openWebPage(page, target, onWait) {
-  return retryConversationRead(async () => {
-    let history;
-    const id = /^https:\/\/chatgpt\.com\/c\/([a-zA-Z0-9-]+)$/u.exec(target)?.[1];
-    const observe = response => {
-      const url = new URL(response.url());
-      if (id && url.origin === 'https://chatgpt.com' && response.request().method() === 'GET'
-          && [`/backend-api/conversation/${id}`, `/backend-api/conversations/${id}`].includes(url.pathname)) history = response;
-    };
-    const loaded = id && page.waitForResponse?.(response => { observe(response); return history === response; }, { timeout: 15000 }).catch(() => null);
-    try {
-      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      if (id && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-      await page.bringToFront?.();
-      history = await loaded || history;
-      if (history && !history.ok()) {
-        const status = history.status(), retryAfter = history.headers()['retry-after'];
-        const retryMs = retryAfter ? (/^\d+$/u.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
-        throw Object.assign(new Error(status === 429 ? 'GPT_WEB_RATE_LIMITED'
-          : status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
-          : [401, 403].includes(status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED' : 'GPT_WEB_CONVERSATION_READ_FAILED'),
-        { httpStatus: status, retryMs: Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0 });
-      }
-      await readyWeb(page);
-    } finally { await loaded; }
-  }, onWait);
+  try {
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (error) {
+    if (error.name !== 'TimeoutError' || page.url() !== target) throw error;
+  }
+  const pinned = /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target);
+  if (pinned && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  await onWait?.({ retryAt: Date.now() + 300000 });
+  try {
+    await readyWeb(page);
+    if (pinned && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  } finally { await onWait?.(null); }
 }
 
 export async function verifyWebParents(page, parents, onWait) {
