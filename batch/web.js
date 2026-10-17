@@ -223,6 +223,15 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
     .some(e => e.textContent.includes(id)) || /^\/c\/[a-zA-Z0-9-]+$/u.test(location.pathname), requestId, { timeout: 30000 });
   if (!conversationUrl && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) return readWebResult(page, questions, requestId, parentRequestId, page.url());
   await page.waitForFunction(turns => {
+    if (/^\/c\/[a-zA-Z0-9-]+$/u.test(location.pathname)) return true;
+    // The virtualized transcript may mount completion controls only at its end.
+    const main = document.querySelector('main');
+    const containers = [...(main?.querySelectorAll('*') || [])];
+    for (let el = main; el; el = el.parentElement) containers.push(el);
+    for (const el of containers) {
+      if (el.clientHeight > 100 && el.scrollHeight > el.clientHeight
+          && !el.closest('pre,textarea,[contenteditable="true"]') && /^(auto|scroll)$/u.test(getComputedStyle(el).overflowY)) el.scrollTop = el.scrollHeight;
+    }
     const assistants = [...document.querySelectorAll('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]')];
     const assistant = assistants.at(-1);
     if (assistants.length !== turns) return false;
@@ -235,7 +244,7 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
     // A stale message DOM must not discard a completed, scope-validated reply.
     return readConversation(page, questions, requestId, parentRequestId, conversationUrl || page.url());
   }
-  if (conversationUrl && page.url() !== conversationUrl) return readConversation(page, questions, requestId, parentRequestId, conversationUrl);
+  if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(conversationUrl || page.url())) return readWebResult(page, questions, requestId, parentRequestId, conversationUrl || page.url());
   const assistant = page.locator('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]');
   const userCount = await page.locator('[data-message-author-role="user"]').count()
     || await page.locator('[data-content-search-turn-key]').count();

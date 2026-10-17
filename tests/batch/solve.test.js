@@ -207,6 +207,47 @@ test('a completed conversation is read without waiting on DOM, while a foreign r
   assert.equal(reads, 2);
 });
 
+test('new chat switches to conversation reads when its URL appears after the user turn', async () => {
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  const messages = [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] },
+    { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
+  let url = 'https://chatgpt.com/', waits = 0, reads = 0;
+  const page = { url: () => url,
+    waitForFunction: async (fn, arg) => {
+      waits++;
+      if (waits === 1) return; // The user turn mounts before navigation.
+      url = 'https://chatgpt.com/c/owned-conversation';
+      assert.equal(runInNewContext(`(${fn.toString()})(turns)`, {
+        turns: arg, location: { pathname: '/c/owned-conversation' },
+        document: { querySelectorAll: () => assert.fail('virtualized answer must not be inspected once URL is known') },
+      }), true);
+    },
+    evaluate: async () => { reads++; return messages; },
+    locator: () => assert.fail('reading a completed conversation must not require scrolling or copy controls') };
+  assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
+  assert.equal(waits, 2); assert.equal(reads, 1);
+});
+
+test('legacy transcript scrolls itself when completion controls mount only at the bottom', async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+    await page.route('https://chatgpt.com/', route => route.fulfill({ contentType: 'text/html', body: `<main>
+      <div id="transcript" style="height:200px;overflow-y:auto"><div data-message-author-role="user">nonce</div><div style="height:1500px"></div>
+      <div data-message-author-role="assistant"><pre><code>${JSON.stringify(payload)}</code></pre><a href="https://source.example/">source</a></div></div></main>
+      <script>document.getElementById('transcript').addEventListener('scroll', e => {
+        if (e.target.scrollTop + e.target.clientHeight < e.target.scrollHeight - 2) return;
+        if (document.querySelector('button')) return;
+        const button = document.createElement('button'); button.setAttribute('aria-label', 'Copy');
+        document.querySelector('[data-message-author-role=assistant]').append(button);
+      });</script>` }));
+    await page.goto('https://chatgpt.com/');
+    assert.equal((await readWebResult(page, [q('1')], 'nonce')).answers[0].status, 'candidate');
+    assert.ok(await page.locator('#transcript').evaluate(el => el.scrollTop > 0));
+  } finally { await browser.close(); }
+});
+
 test('unavailable conversation and access errors stop the pinned read without retry or sending', async () => {
   for (const code of ['GPT_WEB_CONVERSATION_UNAVAILABLE', 'GPT_WEB_CONVERSATION_ACCESS_DENIED', 'GPT_WEB_SESSION_TOKEN_UNAVAILABLE']) {
     let reads = 0;
