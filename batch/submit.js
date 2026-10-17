@@ -64,7 +64,8 @@ export function buildSubmission(test, questions) {
         || !['confirmed', 'candidate'].includes(item.decision?.status)).map(item => ({ slot: item.slot,
         reason: item.decision?.reviewReason || item.memory?.status || 'unresolved', provider: item.decision?.provider || null,
         ...(item.decision?.reviewExplanation ? { explanation: item.decision.reviewExplanation } : {}),
-        ...(Number.isFinite(item.decision?.confidence) ? { confidence: item.decision.confidence } : {}) }));
+        ...(Number.isFinite(item.decision?.confidence) ? { confidence: item.decision.confidence } : {}),
+        ...(Array.isArray(item.decision?.semanticFailures) ? { semanticFailures: item.decision.semanticFailures } : {}) }));
       throw error;
     }
     if (q.unsupportedReason && (q.memory?.status !== 'known' || q.decision.status !== 'confirmed'

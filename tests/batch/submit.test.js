@@ -128,10 +128,13 @@ test('one final request maps stable answers to native fields and rejects unresol
   const bad = structuredClone(attempt);
   bad.questions[0].decision.status = 'needs_review';
   bad.questions[0].decision.reviewExplanation = 'Источники подтверждают несколько вариантов.';
+  bad.questions[0].decision.semanticFailures = [{ label: 'Beta', expected: 'refuted', actual: 'insufficient_context',
+    confidence: 0.99, probability: 0, reason: 'insufficient_context' }];
   assert.throws(() => buildSubmission(bad, bad.questions), /UNRESOLVED/);
   try { buildSubmission(bad, bad.questions); assert.fail('must stop unresolved answer'); }
   catch (error) { assert.equal(error.unresolvedQuestions[0].slot, '1'); assert.ok(error.unresolvedQuestions[0].reason);
-    assert.equal(error.unresolvedQuestions[0].explanation, 'Источники подтверждают несколько вариантов.'); }
+    assert.equal(error.unresolvedQuestions[0].explanation, 'Источники подтверждают несколько вариантов.');
+    assert.deepEqual(error.unresolvedQuestions[0].semanticFailures, bad.questions[0].decision.semanticFailures); }
   bad.questions[0].decision.status = 'candidate';
   bad.questions[0].memory.excludedAnswers = [bad.questions[0].decision.answer];
   assert.throws(() => buildSubmission(bad, bad.questions), /EXCLUDED/);

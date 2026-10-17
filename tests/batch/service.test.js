@@ -460,10 +460,11 @@ test('installed extension accepts a different browser account and recovers a los
     assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);
     assert.equal(await reopened.getByText('Отправлено: <img src=x onerror=alert(1)>', { exact: true }).isVisible(), true);
     assert.equal(await reopened.locator('#jobs img').count(), 0, 'answers are rendered as text');
-    service.state().jobs[0].results[0].unresolvedQuestions = [{ slot: '2', reason: 'model_uncertain', explanation: 'Источники подтверждают несколько вариантов.' }];
-    await reopened.getByText('Вопрос 2: Модель не уверена в ответе · Источники подтверждают несколько вариантов.', { exact: true }).waitFor();
+    service.state().jobs[0].results[0].unresolvedQuestions = [{ slot: '2', reason: 'evidence_not_supportive', explanation: 'Цитата не доказывает вариант.',
+      semanticFailures: [{ label: 'Alpha', expected: 'supported', actual: 'supported', confidence: 0.91, probability: 0.94, reason: 'below_threshold' }] }];
+    await reopened.getByText('Вопрос 2: Цитата не доказывает выбранный ответ · Цитата не доказывает вариант. · проверка Jev: Alpha: ожидался подтверждён, получено подтверждён (уверенность 91%, вероятность ожидаемого вердикта 94%)', { exact: true }).waitFor();
     await reopened.locator('#copy-report').click();
-    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Источники подтверждают несколько вариантов\./);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /вероятность ожидаемого вердикта 94%/);
     service.state().jobs[0].results[0].unresolvedQuestions = [];
     await reopened.evaluate(() => { navigator.clipboard.writeText = async () => { throw new Error('denied'); }; });
     await reopened.locator('#copy-report').click();
@@ -596,15 +597,18 @@ test('batch errors become visible immediately with question reasons and are not 
     service = await openService({ ...deps(root), batchRunner: async (moodle, store, ids, options) => {
       await options.progress('starting', { quizId: '20', activeAttempt: true, attemptUsage: { used: 2, allowed: 5, remaining: 3 } });
       const explanation = 'Недостаточно точная цитата. '.repeat(20);
-      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web', explanation }];
+      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'evidence_not_supportive', provider: 'gpt_web', explanation,
+        semanticFailures: [{ label: 'Beta', expected: 'refuted', actual: 'insufficient_context', confidence: 0.99, probability: 0, reason: 'insufficient_context' }] }];
       await options.onError('20', error); await gate;
       return [{ quizId: '20', error }];
     } });
     await service.start(input);
     while (!service.state().jobs[0].results[0]?.error) await new Promise(done => setTimeout(done, 5));
     assert.equal(service.state().jobs[0].status, 'running');
-    assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].reason, 'source_quote_not_found');
+    assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].reason, 'evidence_not_supportive');
     assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].explanation, 'Недостаточно точная цитата. '.repeat(20));
+    assert.deepEqual(service.state().jobs[0].results[0].unresolvedQuestions[0].semanticFailures[0], {
+      label: 'Beta', expected: 'refuted', actual: 'insufficient_context', confidence: 0.99, probability: 0, reason: 'insufficient_context' });
     assert.equal(service.state().jobs[0].results[0].activeAttempt, true);
     assert.deepEqual(service.state().jobs[0].results[0].attemptUsage, { used: 2, allowed: 5, remaining: 3 });
     assert.equal(service.state().jobs[0].events.find(e => e.stage === 'starting').activeAttempt, true);

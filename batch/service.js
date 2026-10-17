@@ -103,7 +103,13 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           if (Array.isArray(error.unresolvedQuestions)) quiz.unresolvedQuestions = error.unresolvedQuestions.map(q => ({
             slot: String(q.slot), reason: String(q.reason), provider: q.provider || null,
             ...(typeof q.explanation === 'string' ? { explanation: q.explanation } : {}),
-            ...(Number.isFinite(q.confidence) && q.confidence >= 0 && q.confidence <= 1 ? { confidence: q.confidence } : {}) }));
+            ...(Number.isFinite(q.confidence) && q.confidence >= 0 && q.confidence <= 1 ? { confidence: q.confidence } : {}),
+            ...(Array.isArray(q.semanticFailures) ? { semanticFailures: q.semanticFailures.slice(0, 40).map(check => ({
+              label: String(check.label || '').slice(0, 120), expected: ['supported', 'refuted'].includes(check.expected) ? check.expected : null,
+              actual: ['supported', 'refuted', 'insufficient_context'].includes(check.actual) ? check.actual : null,
+              reason: ['invalid_response', 'insufficient_context', 'verdict_mismatch', 'below_threshold', 'quote_too_large'].includes(check.reason) ? check.reason : 'unknown',
+              ...(Number.isFinite(check.confidence) && check.confidence >= 0 && check.confidence <= 1 ? { confidence: check.confidence } : {}),
+              ...(Number.isFinite(check.probability) && check.probability >= 0 && check.probability <= 1 ? { probability: check.probability } : {}) })) } : {}) }));
           if (code === 'LOGIN_REQUIRED') moodle.authRequired = true;
           await save();
         };

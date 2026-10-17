@@ -63,7 +63,10 @@ const answerDetails = source => [
   ...(source.evidence || []).map(e => `Цитата: «${e.quote}» · ${e.kind === 'context' ? 'материалы курса' : e.url}`),
   ...(source.optionChecks || []).map(check => `${check.selected ? 'Выбрать' : 'Исключить'} «${check.text}»: ${check.reason}${check.evidence ? ` · «${check.evidence.quote}» · ${check.evidence.kind === 'context' ? 'материалы курса' : check.evidence.url}` : ' · проверено Moodle'}`),
 ];
-const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${question.explanation ? ` · ${question.explanation}` : ''}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}`;
+const proofLabels = { supported: 'подтверждён', refuted: 'опровергнут', insufficient_context: 'контекста недостаточно' };
+const proofReasons = { invalid_response: 'некорректный ответ проверяющей модели', verdict_mismatch: 'вердикт противоречит ожиданию', below_threshold: 'оценка ниже порога', quote_too_large: 'цитата превышает лимит' };
+const semanticDetail = check => `${check.label}: ожидался ${proofLabels[check.expected] || check.expected}, получено ${proofLabels[check.actual] || check.actual || proofReasons[check.reason] || check.reason}${Number.isFinite(check.confidence) ? ` (уверенность ${Math.round(check.confidence * 100)}%, вероятность ожидаемого вердикта ${Math.round((check.probability ?? 0) * 100)}%)` : ''}`;
+const reviewDetail = question => `Вопрос ${question.slot}: ${reviewReasons[question.reason] || question.reason}${question.explanation ? ` · ${question.explanation}` : ''}${Number.isFinite(question.confidence) ? ` · уверенность модели: ${Math.round(question.confidence * 100)}%` : ''}${question.semanticFailures?.length ? ` · проверка Jev: ${question.semanticFailures.map(semanticDetail).join('; ')}` : ''}`;
 function problemDetails(q) {
   const latest = current?.jobs.slice().reverse().flatMap(job => job.results || []).find(result => result.quizId === q.quizId);
   const code = latest?.error || q.error || q.reviewError;

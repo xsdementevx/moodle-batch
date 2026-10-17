@@ -34,6 +34,8 @@ test('independent checks hide prior verdicts, verify exclusion, checkpoint once 
     assert.equal(rejected.reviewReason, 'evidence_not_supportive');
     assert.match(rejected.reviewExplanation, /Beta.*недостаточными или неоднозначными/u);
     assert.doesNotMatch(rejected.reviewExplanation, /Alpha/u);
+    assert.deepEqual(rejected.semanticFailures, [{ label: 'Beta', expected: 'refuted', actual: 'insufficient_context',
+      confidence: 0.99, probability: 0, reason: 'insufficient_context' }]);
     const unresolved = { ...answer, status: 'needs_review', evidenceVerified: false };
     assert.deepEqual(await verifySemantics([unresolved], [q], join(dir, 'unused'), { judge: () => assert.fail('no verified candidate') }), [unresolved]);
     const known = { ...q, memory: { multipleOptions: { a: true, b: false } } };
@@ -129,6 +131,9 @@ test('semantic clarification identifies low certainty separately from a contradi
     assert.equal(uncertain.status, 'needs_review');
     assert.match(uncertain.reviewExplanation, /Alpha.*согласна с выводом.*0.89/u);
     assert.doesNotMatch(uncertain.reviewExplanation, /противоречит/u);
+    assert.equal(uncertain.semanticFailures[0].reason, 'below_threshold');
+    assert.deepEqual([uncertain.semanticFailures[0].expected, uncertain.semanticFailures[0].actual,
+      uncertain.semanticFailures[0].confidence, uncertain.semanticFailures[0].probability], ['supported', 'supported', 0.89, 1]);
     const [contradictory] = await verifySemantics([answer], [q], join(dir, 'contradictory'), {
       judge: async ({ payload }) => reply(payload, ['supported', 'supported'])
     });

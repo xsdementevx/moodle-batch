@@ -63,16 +63,23 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
         && p && Object.keys(p).length === 3 && Object.keys(specs[b.id].criteria).every(k => Number.isFinite(p[k]) && p[k] >= 0 && p[k] <= 1)
         && Math.abs(Object.values(p).reduce((s, n) => s + n, 0) - 1) < 0.000001;
       if (valid && a.choice === b.expected && a.confidence >= 0.9 && p[b.expected] >= 0.95) return [];
-      const reason = !valid ? 'проверяющая модель вернула некорректные оценки'
-        : a.choice === 'insufficient_context' ? 'проверяющая модель считает цитаты недостаточными или неоднозначными'
-        : a.choice !== b.expected ? `вывод проверяющей модели противоречит ${b.expected === 'supported' ? 'включению' : 'исключению'} варианта`
+      const reason = !valid ? 'invalid_response'
+        : a.choice === 'insufficient_context' ? 'insufficient_context'
+        : a.choice !== b.expected ? 'verdict_mismatch' : 'below_threshold';
+      const detail = reason === 'invalid_response' ? 'проверяющая модель вернула некорректные оценки'
+        : reason === 'insufficient_context' ? 'проверяющая модель считает цитаты недостаточными или неоднозначными'
+        : reason === 'verdict_mismatch' ? `вывод проверяющей модели противоречит ${b.expected === 'supported' ? 'включению' : 'исключению'} варианта`
         : `проверяющая модель согласна с выводом, но её оценки ниже порога (уверенность ${a.confidence}, вероятность ${p[b.expected]})`;
-      return [`«${b.label}»: ${reason}.`];
+      return [{ label: b.label, expected: b.expected, actual: valid ? a.choice : null,
+        ...(valid ? { confidence: a.confidence, probability: p[b.expected] } : {}), reason, detail: `«${b.label}»: ${detail}.` }];
     });
     const accepted = !tooLarge && !failures.length;
-    const { reviewReason, reviewExplanation, ...verified } = answer;
+    const { reviewReason, reviewExplanation, semanticFailures: oldFailures, ...verified } = answer;
+    const semanticFailures = tooLarge ? checks.filter(b => oversized.has(b.id)).map(b => ({ label: b.label,
+      expected: b.expected, actual: null, reason: 'quote_too_large' })) : failures.map(({ detail, ...failure }) => failure);
     return { ...(accepted ? verified : answer), semanticVerified: accepted, semanticPolicy: SEMANTIC_PROOF_POLICY, ...(accepted ? {} : { status: 'needs_review', evidenceVerified: false,
       reviewReason: 'evidence_not_supportive', reviewExplanation: tooLarge ? 'Одна цитата проверки обоснований превышает лимит.'
-        : failures.join(' ') + ' Перепроверь указанные варианты по прямым источникам; если доказательств нет, оставь вопрос нерешённым.' }) };
+        : failures.map(failure => failure.detail).join(' ') + ' Перепроверь указанные варианты по прямым источникам; если доказательств нет, оставь вопрос нерешённым.',
+      semanticFailures }) };
   });
 }
