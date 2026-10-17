@@ -31,8 +31,8 @@ test('service runs one durable job, rejects another and stops retries after veri
   try {
     service = await openService({ ...deps(root), runner: async (moodle, store, quizId, options) => {
       assert.deepEqual(options.importedReviews['20'], [`${scope.origin}/mod/quiz/review.php?attempt=1&cmid=20`]);
-      calls++; await options.progress('solving', { quizId, provider: 'Jev', questions: 1, context: 'private synthetic context' });
-      await options.progress('solving', { quizId, provider: 'Jev', questions: 1, context: 'updated private context' });
+      calls++; await options.progress('solving', { quizId, provider: 'Jev', questions: 1, tests: 1, total: 12, context: 'private synthetic context' });
+      await options.progress('solving', { quizId, provider: 'Jev', questions: 1, tests: 1, total: 12, context: 'updated private context' });
       await gate; return { quizId: '20', courseId: '10', percent: calls === 1 ? 80 : 100, gradePercent: calls === 1 ? 80 : 100 };
     } });
     await service.refresh();
@@ -48,6 +48,8 @@ test('service runs one durable job, rejects another and stops retries after veri
     assert.equal(events[0].kind, 'start');
     assert.equal(events.filter(e => e.kind === 'result').length, 2);
     assert.deepEqual(events.filter(e => e.stage === 'solving').map(e => e.round), [1, 2], 'duplicate stages collapse but a new round remains visible');
+    assert.equal(events.find(e => e.stage === 'solving').tests, 1);
+    assert.equal(events.find(e => e.stage === 'solving').total, 12);
     assert.equal(events.at(-1).kind, 'complete');
     assert.equal(JSON.stringify(events).includes('private synthetic context'), false);
     assert.equal(service.state().overview.courses[0].quizzes[0].percent, 100);
@@ -421,13 +423,15 @@ test('installed extension accepts a different browser account and recovers a los
     await waitDone(service);
     assert.equal(calls, 1);
     await dashboard.close();
+    service.state().jobs[0].events.push({ at: new Date().toISOString(), kind: 'stage', stage: 'solving', tests: 11, total: 55 });
     const reopened = await context.newPage();
     await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=43`);
     await reopened.locator('#job-title').filter({ hasText: 'Запуск завершён' }).waitFor();
     assert.equal(await reopened.locator('#seconds-per-question').inputValue(), '12');
     await reopened.locator('#nav-logs').click();
     assert.equal(await reopened.locator('#logs-view').isVisible(), true);
-    assert.equal(await reopened.locator('.events li').count(), 3);
+    assert.equal(await reopened.locator('.events li').count(), 4);
+    await reopened.getByText('Решаю вопросы · 11 тестов · 55 всего вопросов', { exact: true }).waitFor();
     await reopened.evaluate(() => { navigator.clipboard.writeText = async text => { globalThis.copiedReport = text; }; });
     await reopened.locator('#copy-report').click();
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Moodle Batch — отчёт запуска/);
@@ -578,7 +582,8 @@ test('batch errors become visible immediately with question reasons and are not 
   let service, release; const gate = new Promise(done => { release = done; });
   try {
     service = await openService({ ...deps(root), batchRunner: async (moodle, store, ids, options) => {
-      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web', explanation: 'Нет точной цитаты для выбранного ответа.' }];
+      const explanation = 'Недостаточно точная цитата. '.repeat(20);
+      const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web', explanation }];
       await options.onError('20', error); await gate;
       return [{ quizId: '20', error }];
     } });
@@ -586,7 +591,7 @@ test('batch errors become visible immediately with question reasons and are not 
     while (!service.state().jobs[0].results[0]?.error) await new Promise(done => setTimeout(done, 5));
     assert.equal(service.state().jobs[0].status, 'running');
     assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].reason, 'source_quote_not_found');
-    assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].explanation, 'Нет точной цитаты для выбранного ответа.');
+    assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].explanation, 'Недостаточно точная цитата. '.repeat(20));
     release(); await waitDone(service);
     assert.equal(service.state().jobs[0].events.filter(e => e.kind === 'error').length, 1);
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }

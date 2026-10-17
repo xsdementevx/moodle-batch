@@ -20,7 +20,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
   const event = (job, kind, detail = {}) => {
     const item = { at: new Date().toISOString(), kind };
     // Keep only display-safe metadata; never persist prompts, answers or credentials here.
-    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'percent', 'error',
+    for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'tests', 'total', 'percent', 'error',
       'httpStatus', 'retryAt', 'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource']) {
       if (detail[key] !== undefined) item[key] = detail[key];
     }
@@ -101,7 +101,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           quiz.error = code; quiz.status = 'error';
           if (Array.isArray(error.unresolvedQuestions)) quiz.unresolvedQuestions = error.unresolvedQuestions.map(q => ({
             slot: String(q.slot), reason: String(q.reason), provider: q.provider || null,
-            ...(typeof q.explanation === 'string' ? { explanation: q.explanation.slice(0, 400) } : {}),
+            ...(typeof q.explanation === 'string' ? { explanation: q.explanation } : {}),
             ...(Number.isFinite(q.confidence) && q.confidence >= 0 && q.confidence <= 1 ? { confidence: q.confidence } : {}) }));
           if (code === 'LOGIN_REQUIRED') moodle.authRequired = true;
           await save();

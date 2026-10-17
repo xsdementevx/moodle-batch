@@ -134,6 +134,15 @@ test('semantic clarification identifies low certainty separately from a contradi
     });
     assert.match(contradictory.reviewExplanation, /Beta.*противоречит исключению/u);
     assert.equal(contradictory.semanticVerified, false);
+    const q3 = { ...q, options: [...q.options, { id: 'c', text: 'Gamma' }] };
+    const answer3 = { ...answer, optionChecks: [...answer.optionChecks,
+      { optionId: 'c', selected: false, evidence: { quote } }] };
+    const [allFailures] = await verifySemantics([answer3], [q3], join(dir, 'all-failures'), { judge: async ({ payload }) => {
+      const result = reply(payload, ['supported', 'refuted', 'refuted']);
+      for (const item of Object.values(result.answers)) item.confidence = 0.89;
+      return result;
+    } });
+    for (const label of ['Alpha', 'Beta', 'Gamma']) assert.match(allFailures.reviewExplanation, new RegExp(label, 'u'));
     await verifySemantics([answer], [q], join(dir, 'uncertain'), { judge: () => assert.fail('diagnostics reuse checkpoint') });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

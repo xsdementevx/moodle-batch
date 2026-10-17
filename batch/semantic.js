@@ -73,6 +73,6 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
     const { reviewReason, reviewExplanation, ...verified } = answer;
     return { ...(accepted ? verified : answer), semanticVerified: accepted, semanticPolicy: SEMANTIC_PROOF_POLICY, ...(accepted ? {} : { status: 'needs_review', evidenceVerified: false,
       reviewReason: 'evidence_not_supportive', reviewExplanation: tooLarge ? 'Одна цитата проверки обоснований превышает лимит.'
-        : failures.slice(0, 2).join(' ') + ' Перепроверь указанные варианты по прямым источникам; если доказательств нет, оставь вопрос нерешённым.' }) };
+        : failures.join(' ') + ' Перепроверь указанные варианты по прямым источникам; если доказательств нет, оставь вопрос нерешённым.' }) };
   });
 }
