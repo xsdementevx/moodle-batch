@@ -44,7 +44,7 @@ test('clarification reuses its owned conversation tab without navigation and pre
           const data=await r.json();history.replaceState({},'', '/c/'+data.id);editor.innerText='';}</script>` });
     });
     const personal = await context.newPage(); await personal.setContent('<p>Personal page</p>');
-    solve = webSolver({ extension: true, connect: async () => ({ contexts: () => [context], close: async () => {} }) });
+    solve = webSolver({ extension: true, verifySemantics: async answers => answers, connect: async () => ({ contexts: () => [context], close: async () => {} }) });
     const request = (requestId, extra = {}) => solve(questions, material, { requestId, journalPath: join(root, requestId + '.json'), reasoning: 'current', ...extra });
     const first = await request('first');
     await request('independent');

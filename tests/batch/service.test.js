@@ -362,7 +362,7 @@ test('installed extension accepts a different browser account and recovers a los
   let context, service, server, calls = 0;
   try {
     service = await openService({ ...deps(root), runner: async () => { calls++; return { percent: 100, gradePercent: 90, grade: '10 из 10 (100%)', correct: 1, total: 1,
-      sources: [{ slot: '1', provider: 'memory', cached: true, feedback: 'correct', question: 'Synthetic question', answer: ['<img src=x onerror=alert(1)>'], confidence: 0.92,
+      sources: [{ slot: '1', provider: 'memory', cached: true, feedback: 'correct', question: 'Synthetic question', answer: ['<img src=x onerror=alert(1)>'], confidence: 0.92, semanticVerified: true,
         evidence: [{ kind: 'web', quote: 'The documented answer is A.', url: 'https://example.org/reference' }] }], reviewUrl: `${scope.origin}/mod/quiz/review.php?attempt=30&cmid=20` }; } });
     server = serviceServer(service, 'synthetic-token', 49816);
     let lostReply = false, dropReplies = true;
@@ -435,6 +435,7 @@ test('installed extension accepts a different browser account and recovers a los
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Отправлено: <img src=x onerror=alert\(1\)>/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Уверенность модели: 92%/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Связь цитат с ответом: проверена отдельно через Jev/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Цитата: «The documented answer is A\.» · https:\/\/example.org\/reference/);
     await reopened.getByText('Проверка каждого вопроса Moodle', { exact: true }).click();
     assert.equal(await reopened.getByText('Вопрос 1: Верно · memory', { exact: true }).isVisible(), true);

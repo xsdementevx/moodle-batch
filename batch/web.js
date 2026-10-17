@@ -8,6 +8,7 @@ import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence } fro
 import { connectExtension, closeExtensionTabs } from './extension.js';
 import { normalizeShortAnswerForQuestion } from './text.js';
 import { verifyEvidence, sourceText, reviewEvidenceSupport } from './evidence.js';
+import { verifySemantics as validateSemantics } from './semantic.js';
 
 export function webPrompt(questions, context, requestId) {
   return 'Реши вопросы теста. Используй приложенный контекст и обязательно веб-поиск. '
@@ -327,7 +328,7 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
   return { answers: parseWeb(text, questions, requestId, citations), conversationUrl: page.url() };
 }
 
-export async function dispatchWeb(page, questions, context, { requestId, journalPath, reasoning = 'instant', parentRequestId, questionIds, bindings, onWait }) {
+export async function dispatchWeb(page, questions, context, { requestId, journalPath, reasoning = 'instant', parentRequestId, questionIds, bindings, onWait, verifySemantics }) {
   const composer = await readyWeb(page);
   const users = page.locator('[data-message-author-role="user"],[data-content-search-turn-key]');
   const parents = parentRequestId ? [parentRequestId].flat() : [];
@@ -382,6 +383,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
+      if (verifySemantics) result.answers = await verifySemantics(result.answers, questions, journalPath);
       return { ...result, reasoning: effort, sourcePolicy: 9 };
     } catch (error) {
       await writeFile(journalPath, JSON.stringify({ state: 'pending', requestId, questionIds, bindings, conversationUrl: conversationUrl || page.url() }), { mode: 0o600 });
@@ -393,7 +395,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
     ...(snapshot.reasoning ? { reasoning: snapshot.reasoning } : {}) }));
 }
 
-export function webSolver({ authFile, profileDir, visible = false, executablePath, extension = false, connect = connectExtension }) {
+export function webSolver({ authFile, profileDir, visible = false, executablePath, extension = false, connect = connectExtension, verifySemantics = validateSemantics }) {
   let attachment;
   const conversations = new Map();
   async function extensionPage(continueUrl) {
@@ -417,6 +419,7 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
     throw new Error('GPT_EXTENSION_CONTEXT_UNAVAILABLE');
   }
   const solve = async (questions, context, options) => {
+    options = { ...options, verifySemantics };
     // Check completed/pending journals before opening the browser or touching a draft.
     try {
       const cached = JSON.parse(await readFile(options.journalPath, 'utf8'));
@@ -434,6 +437,12 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
             await writeFile(`${options.journalPath}.tmp`, JSON.stringify(cached), { mode: 0o600 });
             await rename(`${options.journalPath}.tmp`, options.journalPath);
           } finally { await parser.close(); }
+        }
+        cached.result.answers = cached.result.answers.map(answer => reviewEvidenceSupport(reviewConfidence(answer), questions.find(q => q.slot === answer.slot)));
+        if (cached.result.answers.some(a => a.status === 'candidate' && a.evidenceVerified && a.semanticVerified !== true)) {
+          cached.result.answers = await verifySemantics(cached.result.answers, questions, options.journalPath);
+          await writeFile(options.journalPath + '.tmp', JSON.stringify(cached), { mode: 0o600 });
+          await rename(options.journalPath + '.tmp', options.journalPath);
         }
         return cached.result.answers.map(answer => ({ ...reviewEvidenceSupport(reviewConfidence(answer), questions.find(q => q.slot === answer.slot)),
         ...(cached.result.conversationUrl ? { conversationUrl: cached.result.conversationUrl } : {}),

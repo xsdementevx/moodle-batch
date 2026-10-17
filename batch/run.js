@@ -86,6 +86,7 @@ export async function finishQuiz(moodle, store, prepared, questions, { root, sec
       return { slot: q.slot, question: q.text, answer, provider: q.decision?.provider,
       ...(q.decision?.cached ? { cached: true } : {}),
       ...(q.decision?.reasoning ? { reasoning: q.decision.reasoning } : {}),
+      ...(q.decision?.semanticVerified ? { semanticVerified: true } : {}),
       ...(Number.isFinite(q.decision?.confidence) ? { confidence: q.decision.confidence } : {}),
       ...(q.decision?.evidenceVerified ? { evidence: (Array.isArray(q.decision.evidence) ? q.decision.evidence : [q.decision.evidence])
         .filter(e => ['context', 'web'].includes(e?.kind) && typeof e.quote === 'string')

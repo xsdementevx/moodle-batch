@@ -155,6 +155,27 @@ test('conversation parser validates identity, final answer and actual web tool e
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('completed answers gain independent semantic checks without resending to ChatGPT', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-cache-'));
+  try {
+    const question = q('1'), journalPath = join(dir, 'web.json');
+    const answer = { slot: '1', provider: 'gpt_web', status: 'candidate', answer: [options[0].id],
+      evidenceVerified: true, confidence: 0.99, evidence: { kind: 'context', quote: 'The material explicitly supports Alpha.' } };
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [answer] } }));
+    let checks = 0;
+    const solve = webSolver({ extension: true, connect: () => assert.fail('no new browser or ChatGPT send'),
+      verifySemantics: async (answers, questions, path) => {
+        checks++; assert.equal(path, journalPath); assert.deepEqual(questions, [question]);
+        return answers.map(a => ({ ...a, semanticVerified: true }));
+      } });
+    assert.equal((await solve([question], {}, { journalPath }))[0].semanticVerified, true);
+    assert.equal((await solve([question], {}, { journalPath }))[0].semanticVerified, true);
+    assert.equal(checks, 1);
+    assert.equal(JSON.parse(await readFile(journalPath, 'utf8')).result.answers[0].semanticVerified, true);
+    await solve.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 test('extension reuses one attachment, closes its own pages and detaches without closing the personal context', async () => {
   const events = [];
   const solve = webSolver({ extension: true, connect: async () => {
@@ -182,7 +203,8 @@ test('completed evidence arrays are rechecked after a reader upgrade but model u
   ];
   try {
     await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 3, answers } }));
-    const solve = webSolver({ extension: true, connect: () => assert.fail('rechecking evidence must not dispatch to ChatGPT') });
+    const solve = webSolver({ extension: true, verifySemantics: async answers => answers,
+      connect: () => assert.fail('rechecking evidence must not dispatch to ChatGPT') });
     const result = await solve([{ slot: '1', type: 'multiple', options: [{ id: 'one' }, { id: 'two' }] }, { slot: '2' }], { text: quote }, { journalPath });
     assert.equal(result[0].evidenceVerified, true);
     assert.equal(result[0].status, 'candidate');
@@ -528,9 +550,17 @@ test('verified cached answers survive regrouping but changed wording, context or
   try {
     await writeFile(join(dir, `${'b'.repeat(64)}.json`), JSON.stringify({ state: 'complete',
       bindings: [{ slot: question.slot, fingerprint: questionFingerprint(question, context) }],
-      result: { answers: [{ slot: question.slot, status: 'candidate', answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true }] } }));
+      result: { answers: [{ slot: question.slot, status: 'candidate', answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true, semanticVerified: true }] } }));
     const [cached] = await solveTest([question], context, { journalDir: dir, web: () => assert.fail('verified answer must be reused') });
     assert.equal(cached.decision.cached, true);
+    const path = join(dir, `${'b'.repeat(64)}.json`), saved = JSON.parse(await readFile(path, 'utf8'));
+    delete saved.result.answers[0].semanticVerified;
+    await writeFile(path, JSON.stringify(saved));
+    let rechecked = false;
+    await solveTest([question], context, { journalDir: dir, web: async () => {
+      rechecked = true; return [{ ...saved.result.answers[0], semanticVerified: true }];
+    } });
+    assert.equal(rechecked, true, 'regrouped old cache cannot skip semantic checks');
     for (const [changed, material] of [[{ ...question, text: 'A changed question?' }, context], [question, { ...context, contextHash: 'new' }],
       [{ ...question, memory: { ...question.memory, excludedAnswers: [[options[0].id]] } }, context]]) {
       let called = false;
@@ -577,7 +607,7 @@ test('multiple answers check omitted options at Medium even with 99% confidence 
       assert.match(webPrompt(batch, material, opts.requestId), /включая не выбранные ранее/);
     }
     return { reasoning: opts.reasoning === 'medium' ? 'Средний' : 'Instant', answers: batch.map(q => ({ slot: q.slot,
-      provider: 'gpt_web', status: 'candidate', confidence: 0.99, evidenceVerified: true,
+      provider: 'gpt_web', status: 'candidate', confidence: 0.99, evidenceVerified: true, semanticVerified: true,
       answer: q.type === 'multiple' && opts.reasoning === 'medium' ? options.map(o => o.id) : [options[0].id],
       ...(q.type === 'multiple' && opts.reasoning === 'medium' ? { optionsVerified: true,
         optionChecks: options.map(o => ({ optionId: o.id, selected: true, reason: 'The source explicitly includes this option.' })) } : {}),
@@ -607,7 +637,7 @@ test('independent context packets get Instant answers before clarification and r
     calls.push(`${opts.reasoning}:${question.contextId}`);
     assert.deepEqual(Object.keys(material.documents), [question.contextId]);
     if (opts.reasoning !== 'instant') assert.equal(opts.continueUrl, 'https://chatgpt.com/c/first', 'another packet must not switch the clarification chat');
-    return { answers: [{ slot: question.slot, provider: 'gpt_web', answer: [options[0].id], evidenceVerified: true,
+    return { answers: [{ slot: question.slot, provider: 'gpt_web', answer: [options[0].id], evidenceVerified: true, semanticVerified: true,
       status: question.contextId === 'first' && opts.reasoning !== 'high' ? 'needs_review' : 'candidate',
       conversationUrl: `https://chatgpt.com/c/${question.contextId}` }] };
   }, opts.questionIds, opts.bindings).then(result => result.answers);

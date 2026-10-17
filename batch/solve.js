@@ -194,7 +194,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
       for (const q of unresolved) {
         const binding = saved.bindings?.find(b => b.slot === q.slot && b.fingerprint === questionFingerprint(q, context));
-        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true && reviewEvidenceSupport(a, q).status === 'candidate'
+        const answer = binding && saved.result.answers.find(a => a.slot === q.slot && reviewConfidence(a).status === 'candidate' && a.evidenceVerified === true && a.semanticVerified === true && reviewEvidenceSupport(a, q).status === 'candidate'
           && (q.type !== 'multiple' || /^(?:medium|high|Средний|Высокий)$/iu.test(a.reasoning || saved.result.reasoning || '')));
         if (answer) {
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,

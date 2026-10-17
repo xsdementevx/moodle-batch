@@ -59,6 +59,7 @@ const answerDetails = source => [
   ...(source.question ? [`Формулировка: ${source.question}`] : []),
   ...(source.answer?.length ? [`Отправлено: ${source.answer.join('; ')}`] : []),
   ...(Number.isFinite(source.confidence) ? [`Уверенность модели: ${Math.round(source.confidence * 100)}%`] : []),
+  ...(source.semanticVerified ? ['Связь цитат с ответом: проверена отдельно через Jev'] : []),
   ...(source.evidence || []).map(e => `Цитата: «${e.quote}» · ${e.kind === 'context' ? 'материалы курса' : e.url}`),
   ...(source.optionChecks || []).map(check => `${check.selected ? 'Выбрать' : 'Исключить'} «${check.text}»: ${check.reason}${check.evidence ? ` · «${check.evidence.quote}» · ${check.evidence.kind === 'context' ? 'материалы курса' : check.evidence.url}` : ' · проверено Moodle'}`),
 ];
