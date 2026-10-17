@@ -330,7 +330,7 @@ test('HTTP bridge requires secret, exact loopback host, extension origin, accoun
   } finally { await new Promise(done => server.close(done)); await service.close(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('installed extension recovers a lost start reply after reopening without changing intent or dispatching twice', async () => {
+test('installed extension accepts a different browser account and recovers a lost start reply after reopening without changing intent or dispatching twice', async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-extension-'));
   let context, service, server, calls = 0;
   try {
@@ -354,7 +354,7 @@ test('installed extension recovers a lost start reply after reopening without ch
       args: [`--disable-extensions-except=${dir}`, `--load-extension=${dir}`] });
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
     await context.route(`${scope.origin}/**`, route => route.fulfill({ contentType: 'text/html', body: new URL(route.request().url()).pathname === '/user/profile.php'
-      ? '<body id="page-user-profile"><main id="region-main"><div data-userid="42"></div></main></body>'
+      ? '<body id="page-user-profile"><main id="region-main"><div data-userid="43"></div></main></body>'
       : '<body><div class="usermenu"><a href="/user/profile.php">Profile</a></div><main id="region-main"><form id="responseform"><input value="unchanged"></form></main></body>' }));
     const page = await context.newPage(); await page.goto(`${scope.origin}/mod/quiz/view.php?id=20`);
     const opened = context.waitForEvent('page');
@@ -375,13 +375,14 @@ test('installed extension recovers a lost start reply after reopening without ch
     assert.deepEqual(saved.quizIds, ['20']);
     assert.equal(saved.requestId, service.state().jobs[0].requestId);
     assert.equal(saved.secondsPerQuestion, 12);
+    assert.equal(saved.userScope, '42', 'jobs use the service account rather than the browser account');
     assert.equal(lostReply, true);
     dropReplies = false;
     await waitDone(service);
     assert.equal(calls, 1);
     await dashboard.close();
     const reopened = await context.newPage();
-    await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=42`);
+    await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=43`);
     await reopened.locator('#job-title').filter({ hasText: 'Запуск завершён' }).waitFor();
     assert.equal(await reopened.locator('#seconds-per-question').inputValue(), '12');
     await reopened.locator('#nav-logs').click();

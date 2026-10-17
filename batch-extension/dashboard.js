@@ -1,5 +1,5 @@
 const params = new URLSearchParams(location.search);
-const userScope = params.get('user');
+const userScope = globalThis.batchConfig.userScope;
 const preset = params.get('quiz');
 const $ = id => document.getElementById(id);
 const selected = new Set(preset ? [preset] : []);
