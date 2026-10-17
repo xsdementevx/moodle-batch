@@ -720,6 +720,31 @@ test('matching context excerpts include terms from row labels and answer options
   assert.equal(selectContext('Full uncut material', [question], 2402), 'Full uncut material');
 });
 
+test('context retrieval keeps short legal terms, list headings, source offsets and a strict excerpt budget', () => {
+  const filler = 'Посторонняя тема без нужных терминов.\n'.repeat(140);
+  const heading = 'Расходы по обращению в суд включают:\n';
+  const list = '1. Пошлина.\n2. Оплата экспертизы.\n';
+  const text = filler + heading + list + filler;
+  const excerpt = selectContext(text, [q('1', { text: 'Суд', options: [], rows: [] })], 4000);
+  assert.ok(excerpt.includes(heading + list));
+  assert.ok(excerpt.length <= 4000);
+  for (const match of excerpt.matchAll(/\[Фрагмент \d+ из \d+; исходные символы (\d+)–(\d+)\]\n([\s\S]*?)(?=\n\[|$)/gu)) {
+    assert.equal(match[3], text.slice(Number(match[1]) - 1, Number(match[2])));
+  }
+  for (const term of ['Срок', 'Иск']) {
+    const sentence = `${term} составляет десять дней.\n`;
+    assert.ok(selectContext(filler + sentence + filler, [q('1', { text: term, options: [], rows: [] })], 2402).includes(sentence));
+  }
+  // A short word must not match inside a different word (иск / список).
+  assert.equal(selectContext('В списке приведены сведения.\n'.repeat(300), [q('1', { text: 'Иск', options: [], rows: [] })], 2402), '');
+  assert.equal(selectContext(text, [q('1', { text: 'Суд', options: [], rows: [] })], 100), '');
+  const adjacent = 'z'.repeat(1130) + '\nУсловия подачи заявления:\n' + 'Иск рассматривается по следующим правилам. '.repeat(24) + '\n' + filler;
+  const withHeading = selectContext(adjacent, [q('1', { text: 'Иск', options: [], rows: [] })], 4000);
+  assert.ok(withHeading.includes('Условия подачи заявления:'));
+  assert.ok(withHeading.includes('Иск рассматривается по следующим правилам.'));
+  assert.match(withHeading, /Фрагмент 2 из/u);
+});
+
 test('oversized questions are rejected both first and after a packet split for each provider', () => {
   const context = { text: '' };
   const normal = q('1');

@@ -17,15 +17,37 @@ const negativeQuestion = q => /(?:^|[^\p{L}])(?:не|кроме|неверн\p{L
 
 export function selectContext(text, questions, limit = 48000) {
   if (text.length <= limit) return text;
-  const terms = new Set(questions.flatMap(q => (q.text + ' ' + [...q.options, ...q.rows, ...q.rows.flatMap(r => r.options)]
-    .map(o => o.text).join(' ')).toLowerCase().match(/[\p{L}\p{N}]{5,}/gu) || []).map(t => t.slice(0, 6)));
-  const chunks = text.match(/[\s\S]{1,1200}/gu) || [];
-  const ranked = chunks.map((text, index) => ({ text, index, score: [...terms].filter(t => text.toLowerCase().includes(t)).length }))
-    .filter(c => c.score > 0).sort((a, b) => b.score - a.score).slice(0, Math.max(0, Math.floor((limit - 180) / 1320))).sort((a, b) => a.index - b.index);
-  if (!ranked.length) return '';
-  return '[ВЫДЕРЖКА: часть исходного материала пропущена. Отсутствие сведений здесь не опровергает утверждение.]\n'
-    + ranked.map((c, i) => (i && c.index > ranked[i - 1].index + 1 ? '[ПРОПУСК МЕЖДУ ФРАГМЕНТАМИ]\n' : '')
-      + `[Фрагмент ${c.index + 1} из ${chunks.length}; исходные символы ${c.index * 1200 + 1}–${c.index * 1200 + c.text.length}]\n${c.text}`).join('\n');
+  const words = value => value.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [];
+  const terms = new Set(questions.flatMap(q => words(q.text + ' ' + [...q.options, ...q.rows, ...q.rows.flatMap(r => r.options)]
+    .map(o => o.text).join(' '))).map(t => t.length >= 5 ? t.slice(0, 6) : t));
+  const chunks = [];
+  for (let start = 0; start < text.length;) {
+    const window = text.slice(start, start + 1200);
+    // Prefer a paragraph or sentence boundary; split unusually long sentences at a word.
+    const boundaries = [...window.matchAll(/\n+|[.!?][»”"')]*\s+/gu)].map(m => m.index + m[0].length);
+    const boundary = boundaries.filter(end => end >= 600).at(-1);
+    const end = window.length < 1200 ? window.length : boundary || window.lastIndexOf(' ') + 1 || window.length;
+    const content = text.slice(start, start + end);
+    const tokens = new Set(words(content).flatMap(w => w.length >= 5 ? [w.slice(0, 5), w.slice(0, 6)] : [w]));
+    chunks.push({ text: content, index: chunks.length, start, hits: [...terms].filter(t => tokens.has(t)) });
+    start += end;
+  }
+  const frequencies = new Map();
+  for (const c of chunks) for (const t of c.hits) frequencies.set(t, (frequencies.get(t) || 0) + 1);
+  const ranked = chunks.map(c => ({ ...c, score: c.hits.reduce((sum, t) => sum + Math.log(1 + chunks.length / frequencies.get(t)), 0) }))
+    .filter(c => c.score > 0).sort((a, b) => b.score - a.score);
+  const render = selected => '[ВЫДЕРЖКА: часть исходного материала пропущена. Отсутствие сведений здесь не опровергает утверждение.]\n'
+    + [...selected].sort((a, b) => a.index - b.index).map((c, i, sorted) => (i && c.index > sorted[i - 1].index + 1 ? '[ПРОПУСК МЕЖДУ ФРАГМЕНТАМИ]\n' : '')
+      + `[Фрагмент ${c.index + 1} из ${chunks.length}; исходные символы ${c.start + 1}–${c.start + c.text.length}]\n${c.text}`).join('\n');
+  const selected = new Set();
+  for (const hit of ranked) {
+    for (const index of [hit.index, hit.index - 1, hit.index + 1]) {
+      if (index !== hit.index && !selected.has(chunks[hit.index])) break;
+      const chunk = chunks[index];
+      if (chunk && !selected.has(chunk) && render([...selected, chunk]).length <= limit) selected.add(chunk);
+    }
+  }
+  return selected.size ? render(selected) : '';
 }
 
 export async function typesafeKey() {
