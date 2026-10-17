@@ -201,6 +201,8 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       }
     }
   }
+  const webWait = (batch, reasoning) => detail => progress(detail ? 'web_wait' : 'solving', {
+    provider: 'Web', reasoning, questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size, ...detail });
   const bindings = batch => batch.map(q => ({ slot: q.slot, fingerprint: questionFingerprint(q, context) }));
   await notify();
   const eligible = unresolved.filter(q => !decisions.has(q.slot) && ['choice', 'multiple', 'matching'].includes(q.type)
@@ -237,7 +239,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       const jevAnswers = new Map(batch.filter(q => decisions.get(q.slot)?.provider === 'jev').map(q => [q.slot, decisions.get(q.slot)]));
       await progress('solving', { provider: 'Web', reasoning: 'Instant', questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size });
       const results = await web(batch, scoped, { requestId: id, journalPath: join(journalDir, `${id}.json`), reasoning: 'instant',
-        questionIds: batch.map(identity), bindings: bindings(batch) });
+        questionIds: batch.map(identity), bindings: bindings(batch), onWait: webWait(batch, 'Instant') });
       const accept = (answer, reasoning = 'instant') => {
         let result = reviewEvidenceSupport(reviewConfidence(answer), batch.find(q => q.slot === answer.slot));
         const prior = jevAnswers.get(result.slot), q = batch.find(q => q.slot === result.slot);
@@ -282,7 +284,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
             tests: new Set(review.map(q => q.quizId)).size });
           results = await web(review, scoped, { requestId: reviewId, journalPath: join(journalDir, `${reviewId}.json`), reasoning,
             continueUrl: results[0]?.conversationUrl, parentRequestId: results[0]?.conversationUrl ? [...parents] : undefined,
-            questionIds: review.map(identity), bindings: bindings(review) });
+            questionIds: review.map(identity), bindings: bindings(review), onWait: webWait(review, reasoning === 'medium' ? 'Medium' : 'High') });
           parents.push(reviewId);
           for (const result of results) accept(result, reasoning);
           await notify();

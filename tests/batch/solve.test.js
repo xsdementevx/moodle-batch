@@ -286,7 +286,8 @@ test('pinned reads honor rate limit backoff and retry temporary server failures 
       if (reads === 2) return { error: 'GPT_WEB_CONVERSATION_READ_FAILED', httpStatus: 503 };
       return [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] }, { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
     } };
-  const pending = readWebResult(page, [q('1')], 'nonce');
+  const waits = [];
+  const pending = readWebResult(page, [q('1')], 'nonce', undefined, undefined, detail => waits.push(detail));
   const settle = () => new Promise(done => setImmediate(done));
   await settle();
   t.mock.timers.tick(119999); await settle(); assert.equal(reads, 1);
@@ -294,6 +295,8 @@ test('pinned reads honor rate limit backoff and retry temporary server failures 
   t.mock.timers.tick(5000);
   assert.equal((await pending).answers[0].status, 'candidate');
   assert.equal(reads, 3);
+  assert.deepEqual(waits.map(w => w?.httpStatus ?? null), [429, 503, null]);
+  assert.ok(waits[0].retryAt > waits[1].retryAt);
   const limited = { ...page, evaluate: async () => ({ error: 'GPT_WEB_RATE_LIMITED', httpStatus: 429, retryMs: 600000 }) };
   await assert.rejects(readWebResult(limited, [q('1')], 'nonce'), /GPT_WEB_RATE_LIMITED/);
 });
@@ -730,6 +733,16 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
     assert.equal(await page.locator('[role="textbox"]').innerText(), 'A real user draft');
     assert.equal(await page.evaluate(() => window.dispatches), 3);
   } finally { await browser.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('Web readiness activates its own tab before waiting for the composer', async () => {
+  const calls = [];
+  const composer = { waitFor: async () => { calls.push('composer'); } };
+  const page = { bringToFront: async () => { calls.push('foreground'); }, title: async () => 'ChatGPT',
+    url: () => 'https://chatgpt.com/', locator: selector => selector.startsWith('iframe')
+      ? { count: async () => 0 } : { first: () => composer } };
+  assert.equal(await readyWeb(page), composer);
+  assert.deepEqual(calls, ['foreground', 'composer']);
 });
 
 test('reasoning selector changes Instant to verified High and rejects a menu that cannot provide it', async () => {

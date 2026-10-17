@@ -514,6 +514,21 @@ test('installed extension accepts a different browser account and recovers a los
     await reopened.getByRole('heading', { name: 'Жду минимальное время попытки', exact: true }).waitFor();
     assert.match(await reopened.locator('#job-detail').textContent(), /минимум 3 мин\. 20 сек\..*прошло.*осталось.*первого обнаружения/u);
     assert.equal(await reopened.locator('#seconds-per-question').isDisabled(), true);
+    service.state = () => {
+      const state = structuredClone(readState());
+      const detail = { stage: 'web_wait', provider: 'Web', reasoning: 'Medium', questions: 2, tests: 1,
+        httpStatus: 429, retryAt: Date.now() + 60000 };
+      state.jobs[0].status = 'running'; state.jobs[0].current = detail;
+      state.jobs[0].events.push({ ...detail, kind: 'stage', at: new Date().toISOString() });
+      return state;
+    };
+    await reopened.reload();
+    await reopened.getByRole('heading', { name: 'Ожидаю доступ к ответу ChatGPT', exact: true }).waitFor();
+    assert.match(await reopened.locator('#job-detail').textContent(), /ограничил частоту чтения.*HTTP 429.*следующая проверка через.*без повторной отправки/u);
+    await reopened.locator('#nav-logs').click();
+    await reopened.locator('#copy-report').click();
+    assert.match(await reopened.locator('#log-export').inputValue(), /HTTP 429.*следующая проверка/u);
+    await reopened.locator('#nav-tests').click();
     service.state = readState;
     assert.equal(sessionUpdates, 1, 'unchanged browser cookies are not reimported on every poll');
     service.session = async cookies => {

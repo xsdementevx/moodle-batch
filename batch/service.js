@@ -21,7 +21,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     const item = { at: new Date().toISOString(), kind };
     // Keep only display-safe metadata; never persist prompts, answers or credentials here.
     for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'percent', 'error',
-      'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource']) {
+      'httpStatus', 'retryAt', 'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource']) {
       if (detail[key] !== undefined) item[key] = detail[key];
     }
     job.events ||= [];

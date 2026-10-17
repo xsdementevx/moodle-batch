@@ -94,6 +94,8 @@ export function parseWeb(text, questions, requestId, citations) {
 }
 
 export async function readyWeb(page) {
+  // Background tabs can suspend hydration and menu updates in the personal browser.
+  await page.bringToFront?.();
   if (/just a moment|checking your browser|verify you are human|один момент|проверка браузера/iu.test(await page.title())
       || await page.locator('iframe[src*="challenges.cloudflare.com"]').count()) throw new Error('GPT_WEB_CHALLENGE');
   const composer = page.locator('#prompt-textarea:visible,[contenteditable="true"][role="textbox"]:visible').first();
@@ -217,40 +219,47 @@ async function readConversation(page, questions, requestId, parentRequestId, con
   return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl };
 }
 
-async function retryConversationRead(read) {
-  const deadline = Date.now() + 300000;
-  while (true) {
-    try { return await read(); }
-    catch (error) {
-      const retryable = error.message === 'GPT_WEB_RESPONSE_NOT_READY' || error.httpStatus === 429
-        || [500, 502, 503, 504].includes(error.httpStatus);
-      const delay = Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
-      if (!retryable || Date.now() + delay > deadline) throw error;
-      await new Promise(done => setTimeout(done, delay));
+async function retryConversationRead(read, onWait) {
+  let waiting = false;
+  try {
+    const deadline = Date.now() + 300000;
+    while (true) {
+      try { return await read(); }
+      catch (error) {
+        const retryable = error.message === 'GPT_WEB_RESPONSE_NOT_READY' || error.httpStatus === 429
+          || [500, 502, 503, 504].includes(error.httpStatus);
+        const delay = Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
+        if (!retryable || Date.now() + delay > deadline) throw error;
+        if (error.httpStatus) {
+          waiting = true;
+          await onWait?.({ httpStatus: error.httpStatus, retryAt: Date.now() + delay });
+        }
+        await new Promise(done => setTimeout(done, delay));
+      }
     }
-  }
+  } finally { if (waiting) await onWait?.(null); }
 }
 
-export async function verifyWebParents(page, parents) {
+export async function verifyWebParents(page, parents, onWait) {
   const target = page.url();
-  const messages = await retryConversationRead(() => readConversationMessages(page, target));
+  const messages = await retryConversationRead(() => readConversationMessages(page, target), onWait);
   const users = messages.filter(message => message.role === 'user');
   if (users.length !== parents.length || parents.some((id, i) => !users[i].text?.includes(id))) {
     throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
   }
 }
 
-export async function readWebResult(page, questions, requestId, parentRequestId, conversationUrl) {
+export async function readWebResult(page, questions, requestId, parentRequestId, conversationUrl, onWait) {
   const target = conversationUrl || page.url();
   if (conversationUrl && conversationUrl !== page.url() && !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(conversationUrl)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(target)) {
     // Modern ChatGPT may have no readable message DOM. Read only the pinned
     // conversation, without waiting five minutes for nonexistent DOM text.
-    return retryConversationRead(() => readConversation(page, questions, requestId, parentRequestId, target));
+    return retryConversationRead(() => readConversation(page, questions, requestId, parentRequestId, target), onWait);
   }
   try { await page.waitForFunction(id => [...document.querySelectorAll('[data-message-author-role="user"],[data-content-search-turn-key]')]
     .some(e => e.textContent.includes(id)) || /^\/c\/[a-zA-Z0-9-]+$/u.test(location.pathname), requestId, { timeout: 30000 });
-  if (!conversationUrl && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) return readWebResult(page, questions, requestId, parentRequestId, page.url());
+  if (!conversationUrl && /^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) return readWebResult(page, questions, requestId, parentRequestId, page.url(), onWait);
   await page.waitForFunction(turns => {
     if (/^\/c\/[a-zA-Z0-9-]+$/u.test(location.pathname)) return true;
     const assistants = [...document.querySelectorAll('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]')];
@@ -265,7 +274,7 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
     // A stale message DOM must not discard a completed, scope-validated reply.
     return readConversation(page, questions, requestId, parentRequestId, conversationUrl || page.url());
   }
-  if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(conversationUrl || page.url())) return readWebResult(page, questions, requestId, parentRequestId, conversationUrl || page.url());
+  if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(conversationUrl || page.url())) return readWebResult(page, questions, requestId, parentRequestId, conversationUrl || page.url(), onWait);
   const assistant = page.locator('[data-message-author-role="assistant"],[data-talvt-turn-state="complete"]');
   const userCount = await page.locator('[data-message-author-role="user"]').count()
     || await page.locator('[data-content-search-turn-key]').count();
@@ -281,13 +290,13 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
   return { answers: parseWeb(text, questions, requestId, citations), conversationUrl: page.url() };
 }
 
-export async function dispatchWeb(page, questions, context, { requestId, journalPath, reasoning = 'instant', parentRequestId, questionIds, bindings }) {
+export async function dispatchWeb(page, questions, context, { requestId, journalPath, reasoning = 'instant', parentRequestId, questionIds, bindings, onWait }) {
   const composer = await readyWeb(page);
   const users = page.locator('[data-message-author-role="user"],[data-content-search-turn-key]');
   const parents = parentRequestId ? [parentRequestId].flat() : [];
   const conversationUrl = parents.length ? page.url() : undefined;
   if (/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(page.url())) {
-    await verifyWebParents(page, parents);
+    await verifyWebParents(page, parents, onWait);
   } else {
     if (parents.length) {
       try {
@@ -329,7 +338,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   const snapshot = await checkpointed(journalPath, async () => {
     await send.click();
     try {
-      const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl);
+      const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl, onWait);
       result.answers = await verifyEvidence(result.answers, questions, context, {
         textFromHtml: html => page.evaluate(sourceText, html),
       });
