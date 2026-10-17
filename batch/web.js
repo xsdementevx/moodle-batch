@@ -181,8 +181,14 @@ async function readConversation(page, questions, requestId, parentRequestId, con
     const response = await fetch(`/backend-api/conversation/${encodeURIComponent(id)}`, {
       headers: { Authorization: `Bearer ${session.accessToken}` },
     });
-    if (!response.ok) return { error: response.status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
-      : [401, 403].includes(response.status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED' : 'GPT_WEB_CONVERSATION_READ_FAILED' };
+    if (!response.ok) {
+      const retryAfter = response.headers.get('retry-after');
+      const retryMs = retryAfter ? (/^\d+$/u.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
+      return { error: response.status === 404 ? 'GPT_WEB_CONVERSATION_UNAVAILABLE'
+        : [401, 403].includes(response.status) ? 'GPT_WEB_CONVERSATION_ACCESS_DENIED'
+        : response.status === 429 ? 'GPT_WEB_RATE_LIMITED' : 'GPT_WEB_CONVERSATION_READ_FAILED',
+      httpStatus: response.status, retryMs: Number.isFinite(retryMs) ? Math.max(0, retryMs) : 0 };
+    }
     const data = await response.json();
     if (data.id && data.id !== id) throw new Error('GPT_WEB_SCOPE_MISMATCH');
     const messages = [];
@@ -202,7 +208,7 @@ async function readConversation(page, questions, requestId, parentRequestId, con
     }
     return messages;
   }, target.pathname);
-  if (messages.error) throw new Error(messages.error);
+  if (messages.error) throw Object.assign(new Error(messages.error), { httpStatus: messages.httpStatus, retryMs: messages.retryMs });
   return { answers: parseConversation(messages, questions, requestId, parentRequestId), conversationUrl: target.href };
 }
 
@@ -216,7 +222,14 @@ export async function readWebResult(page, questions, requestId, parentRequestId,
     while (true) {
       try { return await readConversation(page, questions, requestId, parentRequestId, target); }
       catch (error) {
-        if (error.message !== 'GPT_WEB_RESPONSE_NOT_READY' || Date.now() >= deadline) throw error;
+        const retryable = error.message === 'GPT_WEB_RESPONSE_NOT_READY' || error.httpStatus === 429
+          || [500, 502, 503, 504].includes(error.httpStatus);
+        const delay = Math.max(error.httpStatus === 429 ? 60000 : 5000, error.retryMs || 0);
+        if (!retryable || Date.now() + delay > deadline) throw error;
+        if (error.httpStatus) {
+          await new Promise(done => setTimeout(done, delay));
+          continue;
+        }
         await page.evaluate(expected => {
           if (location.href !== expected) return;
           const main = document.querySelector('main');

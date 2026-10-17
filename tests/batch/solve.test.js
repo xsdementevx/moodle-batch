@@ -278,6 +278,31 @@ test('unavailable conversation and access errors stop the pinned read without re
   }
 });
 
+test('pinned reads honor rate limit backoff and retry temporary server failures without resending', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const url = 'https://chatgpt.com/c/owned-conversation';
+  const payload = { requestId: 'nonce', answers: [{ slot: '1', answer: [options[0].id], needsReview: false, sourceUrls: ['https://source.example/'] }] };
+  let reads = 0;
+  const page = { url: () => url, locator: () => assert.fail('no draft or send interaction'),
+    evaluate: async (_fn, pathname) => {
+      assert.equal(pathname, '/c/owned-conversation');
+      reads++;
+      if (reads === 1) return { error: 'GPT_WEB_RATE_LIMITED', httpStatus: 429, retryMs: 120000 };
+      if (reads === 2) return { error: 'GPT_WEB_CONVERSATION_READ_FAILED', httpStatus: 503 };
+      return [{ role: 'user', text: 'nonce' }, { role: 'tool', toolName: 'web.run', sources: ['https://source.example/'] }, { role: 'assistant', endTurn: true, text: JSON.stringify(payload) }];
+    } };
+  const pending = readWebResult(page, [q('1')], 'nonce');
+  const settle = () => new Promise(done => setImmediate(done));
+  await settle();
+  t.mock.timers.tick(119999); await settle(); assert.equal(reads, 1);
+  t.mock.timers.tick(1); await settle(); assert.equal(reads, 2);
+  t.mock.timers.tick(5000);
+  assert.equal((await pending).answers[0].status, 'candidate');
+  assert.equal(reads, 3);
+  const limited = { ...page, evaluate: async () => ({ error: 'GPT_WEB_RATE_LIMITED', httpStatus: 429, retryMs: 600000 }) };
+  await assert.rejects(readWebResult(limited, [q('1')], 'nonce'), /GPT_WEB_RATE_LIMITED/);
+});
+
 test('extension reconnects a missing or detached context before dispatch and never retries a pending packet', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-reconnect-'));
   let connects = 0, disconnected = false;
