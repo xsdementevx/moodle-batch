@@ -22,7 +22,7 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
     // Keep only display-safe metadata; never persist prompts, answers or credentials here.
     for (const key of ['stage', 'quizId', 'round', 'provider', 'reasoning', 'questions', 'tests', 'total', 'contextStatus', 'contextTextChars',
       'contextMaterials', 'contextReadyMaterials', 'contextCacheHits', 'percent', 'error',
-      'httpStatus', 'retryAt', 'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource']) {
+      'httpStatus', 'retryAt', 'startedAt', 'readyAt', 'minimumSeconds', 'secondsPerQuestion', 'timingSource', 'activeAttempt', 'attemptUsage']) {
       if (detail[key] !== undefined) item[key] = detail[key];
     }
     job.events ||= [];
@@ -113,6 +113,8 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           progress: async (stage, detail = {}) => {
             job.current = { round: n + 1, stage, ...detail }; event(job, 'stage', job.current);
             if (detail.attemptUsage) {
+              const jobResult = job.results.find(q => q.quizId === detail.quizId);
+              if (jobResult) { jobResult.attemptUsage = detail.attemptUsage; jobResult.activeAttempt = Boolean(detail.activeAttempt); }
               const quiz = overview?.courses.flatMap(c => c.quizzes).find(q => q.quizId === detail.quizId);
               if (quiz) { quiz.attemptUsage = detail.attemptUsage; quiz.activeAttempt = detail.activeAttempt; quiz.detailCheckedAt = new Date().toISOString(); }
               if (quiz) {
@@ -127,6 +129,8 @@ export async function openService({ moodle, store, web, root, runner, batchRunne
           onResult: async result => {
             const quiz = job.results.find(q => q.quizId === result.quizId);
             quiz.attempts.push(result);
+            quiz.attemptUsage = result.attemptUsage;
+            quiz.activeAttempt = false;
             quiz.status = result.percent === 100 ? 'maximum' : result.percent === null ? 'review' : 'running';
             event(job, 'result', { quizId: result.quizId, round: n + 1, percent: result.percent ?? null });
             await save();

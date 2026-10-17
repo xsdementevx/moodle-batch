@@ -425,15 +425,21 @@ test('installed extension accepts a different browser account and recovers a los
     await waitDone(service);
     assert.equal(calls, 1);
     await dashboard.close();
+    service.state().jobs[0].events.push({ at: new Date().toISOString(), kind: 'stage', stage: 'starting', quizId: '20',
+      activeAttempt: true, attemptUsage: { used: 2, allowed: 5, remaining: 3 } });
     service.state().jobs[0].events.push({ at: new Date().toISOString(), kind: 'stage', stage: 'solving', tests: 11, total: 55,
       contextStatus: 'partial', contextTextChars: 900, contextMaterials: 2, contextReadyMaterials: 1, contextCacheHits: 1 });
+    service.state().jobs[0].results[0].attemptUsage = { used: 2, allowed: 5, remaining: 3 };
+    service.state().jobs[0].results[0].activeAttempt = true;
     const reopened = await context.newPage();
     await reopened.goto(`chrome-extension://${new URL(worker.url()).hostname}/dashboard.html?user=43`);
     await reopened.locator('#job-title').filter({ hasText: 'Запуск завершён' }).waitFor();
     assert.equal(await reopened.locator('#seconds-per-question').inputValue(), '12');
     await reopened.locator('#nav-logs').click();
     assert.equal(await reopened.locator('#logs-view').isVisible(), true);
-    assert.equal(await reopened.locator('.events li').count(), 4);
+    assert.equal(await reopened.locator('.events li').count(), 5);
+    await reopened.getByText('Открываю попытку · тест 20 · Попытки Moodle: 2/5 · осталось 3 · активная попытка', { exact: true }).waitFor();
+    await reopened.getByText('Попытки Moodle: 2/5 · осталось 3 · активная попытка', { exact: true }).waitFor();
     await reopened.getByText('Решаю вопросы · 11 тестов · 55 всего вопросов · контекст partial: 1/2 материалов, 900 знаков, кэш 1', { exact: true }).waitFor();
     await reopened.evaluate(() => { navigator.clipboard.writeText = async text => { globalThis.copiedReport = text; }; });
     await reopened.locator('#copy-report').click();
@@ -441,6 +447,8 @@ test('installed extension accepts a different browser account and recovers a los
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Тест 20/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /контекст partial: 1\/2 материалов, 900 знаков, кэш 1/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Минимальное время на вопрос: 12 сек\./);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Раундов решения на тест: 3/);
+    assert.match(await reopened.evaluate(() => globalThis.copiedReport), /завершённых попыток Moodle в этом запуске: 1 \| Попытки Moodle: 2\/5 · осталось 3 · активная попытка/);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Итоговая оценка в журнале Moodle: 90%/);
     assert.equal(await reopened.getByText('В журнале Moodle: 90%', { exact: true }).isVisible(), true);
     assert.match(await reopened.evaluate(() => globalThis.copiedReport), /Вопрос 1: memory; сохранённый ответ; Moodle: Верно/);
@@ -586,6 +594,7 @@ test('batch errors become visible immediately with question reasons and are not 
   let service, release; const gate = new Promise(done => { release = done; });
   try {
     service = await openService({ ...deps(root), batchRunner: async (moodle, store, ids, options) => {
+      await options.progress('starting', { quizId: '20', activeAttempt: true, attemptUsage: { used: 2, allowed: 5, remaining: 3 } });
       const explanation = 'Недостаточно точная цитата. '.repeat(20);
       const error = new Error('UNRESOLVED_SUBMISSION'); error.unresolvedQuestions = [{ slot: '2', reason: 'source_quote_not_found', provider: 'gpt_web', explanation }];
       await options.onError('20', error); await gate;
@@ -596,6 +605,10 @@ test('batch errors become visible immediately with question reasons and are not 
     assert.equal(service.state().jobs[0].status, 'running');
     assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].reason, 'source_quote_not_found');
     assert.equal(service.state().jobs[0].results[0].unresolvedQuestions[0].explanation, 'Недостаточно точная цитата. '.repeat(20));
+    assert.equal(service.state().jobs[0].results[0].activeAttempt, true);
+    assert.deepEqual(service.state().jobs[0].results[0].attemptUsage, { used: 2, allowed: 5, remaining: 3 });
+    assert.equal(service.state().jobs[0].events.find(e => e.stage === 'starting').activeAttempt, true);
+    assert.deepEqual(service.state().jobs[0].events.find(e => e.stage === 'starting').attemptUsage, { used: 2, allowed: 5, remaining: 3 });
     release(); await waitDone(service);
     assert.equal(service.state().jobs[0].events.filter(e => e.kind === 'error').length, 1);
   } finally { release(); await service?.close(); await rm(root, { recursive: true, force: true }); }

@@ -112,7 +112,7 @@ function showProgress() {
   $('job-badge').textContent = ['queued', 'running'].includes(job.status) ? 'В работе' : job.error || job.results.some(q => q.error) ? 'Есть ошибки' : 'Завершён';
   $('job-badge').classList.toggle('active', ['queued', 'running'].includes(job.status));
   const detail = job.current;
-  $('job-detail').textContent = detail ? [detail.quizId ? `Тест ${detail.quizId}` : `Пакет из ${detail.tests || job.quizIds.length} тестов`, `Попытка ${detail.round || 1} из ${job.maxAttempts}`, detail.provider, effortLabel[detail.reasoning] || detail.reasoning, detail.questions ? `${detail.questions} вопросов` : ''].filter(Boolean).join(' · ') : `Выбрано ${job.quizIds.length} тестов · ${time(job.finishedAt || job.createdAt)}`;
+  $('job-detail').textContent = detail ? [detail.quizId ? `Тест ${detail.quizId}` : `Пакет из ${detail.tests || job.quizIds.length} тестов`, `Раунд решения ${detail.round || 1} из ${job.maxAttempts}`, detail.provider, effortLabel[detail.reasoning] || detail.reasoning, detail.questions ? `${detail.questions} вопросов` : ''].filter(Boolean).join(' · ') : `Выбрано ${job.quizIds.length} тестов · ${time(job.finishedAt || job.createdAt)}`;
   if (job.status === 'running' && detail?.stage === 'waiting') {
     $('job-detail').textContent += ` · минимум ${duration(detail.minimumSeconds)} · прошло ${duration((Date.now() - detail.startedAt) / 1000)} · осталось ${duration((detail.readyAt - Date.now()) / 1000)}${detail.timingSource === 'first_seen' ? ' · отсчёт с первого обнаружения' : ''}`;
   }
@@ -135,7 +135,8 @@ function eventText(event) {
   if (event.stage === 'waiting') return `Тест ${event.quizId}: ожидание до ${time(new Date(event.readyAt).toISOString())} · минимум ${duration(event.minimumSeconds)}${event.timingSource === 'first_seen' ? ' · с первого обнаружения' : ''}`;
   const context = event.contextStatus ? event.contextStatus === 'skipped' ? 'контекст не требовался'
     : `контекст ${event.contextStatus}: ${event.contextReadyMaterials}/${event.contextMaterials} материалов, ${event.contextTextChars} знаков${event.contextCacheHits ? `, кэш ${event.contextCacheHits}` : ''}` : '';
-  return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.tests ? `${event.tests} тестов` : '', event.round ? `попытка ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : '', event.total ? `${event.total} всего вопросов` : '', context].filter(Boolean).join(' · ');
+  const attempts = attemptUsageLabel(event);
+  return [stages[event.stage] || (event.kind === 'start' ? 'Запуск принят' : event.stage || 'Событие'), event.quizId ? `тест ${event.quizId}` : '', event.tests ? `${event.tests} тестов` : '', event.round ? `раунд решения ${event.round}` : '', event.provider, effortLabel[event.reasoning] || event.reasoning, event.questions ? `${event.questions} вопросов` : '', event.total ? `${event.total} всего вопросов` : '', context, attempts].filter(Boolean).join(' · ');
 }
 let jobsSignature = '';
 const reviewReasons = { multiple_completeness: 'Проверяю полноту набора вариантов', source_unavailable: 'Источник не удалось прочитать', evidence_not_supportive: 'Цитата не доказывает выбранный ответ', model_uncertain: 'Модель не уверена в ответе', source_quote_not_found: 'Цитата не найдена в веб-источнике', context_quote_not_found: 'Цитата не найдена в материале', source_not_observed: 'Источник не подтверждён веб-поиском', evidence_incomplete: 'Доказательства покрывают не весь ответ', excluded_answer: 'Этот ответ уже был признан неправильным', conflict: 'Противоречие в памяти ответов', unsupported: 'Тип вопроса пока не поддерживается', unresolved: 'Нет проверенного ответа' };
@@ -143,14 +144,26 @@ function sourceSummary(attempt) {
   const sources = attempt?.sources || [];
   return [['memory', 'Память'], ['jev', 'Jev'], ['gpt_web', 'GPT Web']].map(([provider, label]) => sources.some(s => s.provider === provider) ? `${label}: ${sources.filter(s => s.provider === provider).length}` : '').filter(Boolean).join(' · ');
 }
+function attemptUsageLabel(result) {
+  const usage = result.attemptUsage;
+  const parts = [];
+  if (usage) {
+    const used = Number.isInteger(usage.used) ? usage.used : '—';
+    parts.push(usage.unlimited ? `Попытки Moodle: использовано ${used}, без лимита` : `Попытки Moodle: ${used}/${usage.allowed ?? '—'}`);
+    if (Number.isFinite(usage.remaining)) parts.push(`осталось ${usage.remaining}`);
+  }
+  if (result.activeAttempt) parts.push('активная попытка');
+  return parts.join(' · ');
+}
 function reportFor(job) {
   if (!job) return '';
-  const lines = ['Moodle Batch — отчёт запуска', `Запуск: ${job.requestId}`, `Начало: ${time(job.createdAt)}`, `Статус: ${jobLabel(job)}`, `Тесты: ${job.quizIds.join(', ')}`, `Попыток на тест: ${job.maxAttempts}`, '', 'РЕЗУЛЬТАТЫ'];
+  const lines = ['Moodle Batch — отчёт запуска', `Запуск: ${job.requestId}`, `Начало: ${time(job.createdAt)}`, `Статус: ${jobLabel(job)}`, `Тесты: ${job.quizIds.join(', ')}`, `Раундов решения на тест: ${job.maxAttempts}`, '', 'РЕЗУЛЬТАТЫ'];
   lines.splice(lines.length - 2, 0, `Минимальное время на вопрос: ${job.secondsPerQuestion ?? 0} сек.`);
   if (job.error) lines.push(`Ошибка запуска: ${job.error} — ${errors[job.error] || job.error}`);
   for (const result of job.results) {
     const last = result.attempts.at(-1);
-    lines.push(`Тест ${result.quizId} | ${result.status} | попыток: ${result.attempts.length} | оценка: ${last?.percent ?? 'нет'}${Number.isFinite(last?.percent) ? '%' : ''}${result.error ? ` | ${result.error}: ${errors[result.error] || result.error}` : ''}`);
+    const usage = attemptUsageLabel(result);
+    lines.push(`Тест ${result.quizId} | ${result.status} | завершённых попыток Moodle в этом запуске: ${result.attempts.length}${usage ? ` | ${usage}` : ''} | оценка: ${last?.percent ?? 'нет'}${Number.isFinite(last?.percent) ? '%' : ''}${result.error ? ` | ${result.error}: ${errors[result.error] || result.error}` : ''}`);
     for (const question of result.unresolvedQuestions || []) lines.push(`  ${reviewDetail(question)}; ${question.provider || 'без ответа'} [${question.reason}]`);
     for (const [i, attempt] of result.attempts.entries()) {
       lines.push(`  Попытка ${i + 1}: ${attempt.percent ?? 'не раскрыта'}${Number.isFinite(attempt.percent) ? '%' : ''}; вопросов: ${attempt.total ?? 'нет данных'}; правильных: ${attempt.correct ?? 'нет данных'}`);
@@ -198,7 +211,8 @@ function showJobs(force = false) {
     const last = result.attempts.at(-1); const row = node('tr');
     const test = node('td'); const link = node('a', result.quizId); link.href = `${current.origin}/mod/quiz/view.php?id=${encodeURIComponent(result.quizId)}`; link.target = '_blank'; link.rel = 'noopener'; test.append(link);
     const status = result.error ? 'Остановлен' : last?.percent === 100 ? '100%' : result.status === 'running' ? 'В работе' : result.status === 'stopped' ? 'Остановлен' : 'Нужна проверка';
-    const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток: ${result.attempts.length}`);
+    const description = node('td', result.error ? errors[result.error] || result.error : `Завершено попыток Moodle в этом запуске: ${result.attempts.length}`);
+    if (attemptUsageLabel(result)) description.append(node('small', attemptUsageLabel(result), 'quiz-meta'));
     for (const question of result.unresolvedQuestions || []) description.append(node('small', reviewDetail(question), 'quiz-meta'));
     if (sourceSummary(last)) description.append(node('small', sourceSummary(last), 'quiz-meta'));
     if (Number.isFinite(last?.gradePercent)) description.append(node('small', `В журнале Moodle: ${last.gradePercent}%`, 'quiz-meta'));
