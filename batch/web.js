@@ -373,8 +373,8 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   catch { throw new Error('GPT_WEB_SEND_UNAVAILABLE'); }
   const snapshot = await checkpointed(journalPath, async () => {
     clearWebHistory(page);
-    await send.click();
     try {
+      await send.click();
       await waitForWebGeneration(page);
       const result = await readWebResult(page, questions, requestId, parentRequestId, conversationUrl, onWait);
       result.answers = await verifyEvidence(result.answers, questions, context, {

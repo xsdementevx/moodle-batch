@@ -760,6 +760,32 @@ test('Web dispatch on a synthetic page sends once and reads completed JSON with 
       parentRequestId: ['nonce', 'second', 'third'], journalPath: join(dir, 'fourth.json'), reasoning: 'current' }), /GPT_WEB_FOREIGN_DRAFT/);
     assert.equal(await page.locator('[role="textbox"]').innerText(), 'A real user draft');
     assert.equal(await page.evaluate(() => window.dispatches), 3);
+    await page.locator('[role="textbox"]').fill('');
+    const locator = page.locator.bind(page);
+    page.locator = (selector, ...args) => {
+      const result = locator(selector, ...args);
+      if (selector.startsWith('button[data-testid="send-button"]')) {
+        const first = result.first.bind(result);
+        result.first = () => {
+          const button = first();
+          button.click = async () => { throw Object.assign(new Error('send click timed out'), { name: 'TimeoutError' }); };
+          return button;
+        };
+      }
+      return result;
+    };
+    const failedPath = join(dir, 'send-failed.json');
+    await assert.rejects(dispatchWeb(page, [q('1')], material, { requestId: 'send-failed',
+      parentRequestId: ['nonce', 'second', 'third'], journalPath: failedPath, reasoning: 'current',
+      questionIds: ['quiz:attempt:1'], bindings: [{ slot: '1', fingerprint: 'binding' }] }), /UNKNOWN_WEB_OUTCOME/);
+    const pending = JSON.parse(await readFile(failedPath, 'utf8'));
+    assert.equal(pending.state, 'pending');
+    assert.equal(pending.requestId, 'send-failed');
+    assert.equal(pending.conversationUrl, 'https://chatgpt.com/');
+    assert.deepEqual(pending.questionIds, ['quiz:attempt:1']);
+    assert.deepEqual(pending.bindings, [{ slot: '1', fingerprint: 'binding' }]);
+    await assert.rejects(checkpointed(failedPath, () => assert.fail('unknown click must not be retried')), /UNKNOWN_MODEL_OUTCOME/);
+    assert.equal(await page.evaluate(() => window.dispatches), 3);
   } finally { await browser.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
