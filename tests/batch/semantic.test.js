@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifySemantics } from '../../batch/semantic.js';
+import { pendingModelTests, solveTest } from '../../batch/solve.js';
 
 const quote = 'Only Alpha is included; Beta is explicitly excluded.';
 const q = { slot: '1', type: 'multiple', text: 'Which options belong?', options: [{ id: 'a', text: 'Alpha' }, { id: 'b', text: 'Beta' }] };
@@ -76,5 +77,17 @@ test('semantic confidence and probabilities must be valid and above the acceptan
       } });
       assert.equal(result.semanticVerified, accepted, `case ${i}`);
     }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('an unknown semantic result blocks its quiz across regrouping without blocking unrelated quizzes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-pending-'));
+  try {
+    const question = { ...q, quizId: '20', attemptId: '30', memory: { status: 'unresolved' } };
+    const journal = join(dir, 'a'.repeat(64) + '.json');
+    await writeFile(journal, JSON.stringify({ state: 'complete', result: { answers: [] } }));
+    await assert.rejects(verifySemantics([answer], [question], journal, { judge: async () => { throw new Error('TIMEOUT'); } }), /TIMEOUT/);
+    assert.deepEqual([...await pendingModelTests([question, { ...question, quizId: '21' }], dir)], ['20']);
+    await assert.rejects(solveTest([question], {}, { journalDir: dir, web: () => assert.fail('regrouped resend') }), /UNKNOWN_MODEL_OUTCOME/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

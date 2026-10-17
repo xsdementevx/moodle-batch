@@ -8,6 +8,7 @@ import { answerSignature, digest, questionKey, isExcludedAnswer } from './answer
 
 const run = promisify(execFile);
 const MODEL = 'jev-1.13.0';
+const modelJournal = name => /^[a-f0-9]{64}(?:\.json\.semantic-[a-f0-9]{64})?\.json$/u.test(name);
 export const MIN_WEB_CONFIDENCE = 0.90;
 export const reviewConfidence = answer => answer.status === 'candidate'
   && (!Number.isFinite(answer.confidence) || answer.confidence < MIN_WEB_CONFIDENCE || answer.confidence > 1)
@@ -170,7 +171,7 @@ export async function pendingModelTests(questions, journalDir) {
   const unresolved = questions.filter(q => q.memory?.status === 'unresolved');
   const blocked = new Set();
   const files = await readdir(journalDir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
-  for (const name of files.filter(n => /^[a-f0-9]{64}\.json$/u.test(n))) {
+  for (const name of files.filter(modelJournal)) {
     const saved = JSON.parse(await readFile(join(journalDir, name), 'utf8'));
     if (saved.state !== 'pending') continue;
     for (const q of unresolved) if (!saved.questionIds || saved.questionIds.includes(`${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`)) blocked.add(q.quizId);
@@ -189,7 +190,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
   const questionIds = new Set(unresolved.map(identity));
   // Regrouping or changing reasoning must not bypass a previously pending request.
   const journals = await readdir(journalDir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
-  for (const name of journals.filter(n => /^[a-f0-9]{64}\.json$/u.test(n))) {
+  for (const name of journals.filter(modelJournal)) {
     const saved = JSON.parse(await readFile(join(journalDir, name), 'utf8'));
     if (saved.state === 'pending' && questionIds.size
       && (!saved.questionIds || saved.questionIds.some(id => questionIds.has(id)))) throw new Error('UNKNOWN_MODEL_OUTCOME');

@@ -40,7 +40,11 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
   const replies = {};
   for (const entries of packets) {
     const payload = payloadFor(entries);
-    const result = await checkpointed(journalPath + '.semantic-' + digest(payload) + '.json', () => judge({ payload }));
+    const questionIds = [...new Set(entries.map(([id]) => {
+      const q = questions.find(q => q.slot === bindings.find(b => b.id === id).slot);
+      return `${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`;
+    }))];
+    const result = await checkpointed(journalPath + '.semantic-' + digest(payload) + '.json', () => judge({ payload }), questionIds);
     if (result?.model !== payload.model || !result.answers) throw new Error('INVALID_SEMANTIC_RESPONSE');
     Object.assign(replies, result.answers);
   }
