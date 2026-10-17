@@ -107,31 +107,45 @@ export async function selectWebReasoning(page, target = 'high') {
   const picker = page.getByRole('button', { name: /^(Выбрать модель ChatGPT|Choose ChatGPT model|Select ChatGPT model)$/iu });
   try { await picker.waitFor({ state: 'visible', timeout: 15000 }); }
   catch { throw new Error('GPT_WEB_REASONING_UNAVAILABLE'); }
-  await picker.click();
-  try {
-    const control = page.locator('[data-reasoning-slider="true"]:visible');
-    await control.waitFor({ state: 'visible', timeout: 5000 });
-    const thumb = control.locator('[role="slider"]');
-    const maximum = Number(await thumb.getAttribute('aria-valuemax'));
-    if (!Number.isInteger(maximum) || maximum < 1 || maximum > 10) throw new Error('GPT_WEB_REASONING_UNAVAILABLE');
-    for (let i = 0; i <= maximum * 2 + 1; i++) {
-      const label = (await page.locator('[role="menu"]:visible [role="status"]').textContent()).split(',')[0].trim();
-      if (names[target].test(label)) {
-        await page.keyboard.press('Escape');
-        await page.waitForFunction(pattern => [...document.querySelectorAll('button')]
-          .some(b => /^(Выбрать модель ChatGPT|Choose ChatGPT model|Select ChatGPT model)$/iu.test(b.getAttribute('aria-label') || '')
-            && new RegExp(pattern.replace(/^\^/u, ''), 'iu').test(b.textContent.trim())), names[target].source, { timeout: 5000 });
-        return label;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await picker.click();
+      const control = page.locator('[data-reasoning-slider="true"]:visible');
+      await control.waitFor({ state: 'visible', timeout: 5000 });
+      await page.waitForFunction(() => {
+        const control = [...document.querySelectorAll('[data-reasoning-slider="true"]')].find(el => el.getClientRects().length);
+        const thumb = control?.querySelector('[role="slider"]');
+        return thumb?.hasAttribute('aria-valuenow') && Number(thumb.getAttribute('aria-valuemax')) >= 1
+          && control.closest('[role="menu"]')?.querySelector('[role="status"]')?.textContent.trim();
+      }, undefined, { timeout: 5000 });
+      const thumb = control.locator('[role="slider"]');
+      const maximum = Number(await thumb.getAttribute('aria-valuemax'));
+      if (!Number.isInteger(maximum) || maximum < 1 || maximum > 10) throw new Error('GPT_WEB_REASONING_UNAVAILABLE');
+      for (let i = 0; i <= maximum * 2 + 1; i++) {
+        const status = page.locator('[role="menu"]:visible [role="status"]');
+        const announcement = await status.textContent();
+        const label = announcement.split(',')[0].trim();
+        if (names[target].test(label)) {
+          await page.keyboard.press('Escape');
+          await page.waitForFunction(pattern => [...document.querySelectorAll('button')]
+            .some(b => /^(Выбрать модель ChatGPT|Choose ChatGPT model|Select ChatGPT model)$/iu.test(b.getAttribute('aria-label') || '')
+              && new RegExp(pattern.replace(/^\^/u, ''), 'iu').test(b.textContent.trim())), names[target].source, { timeout: 5000 });
+          return label;
+        }
+        const current = Number(await thumb.getAttribute('aria-valuenow'));
+        const desired = target === 'instant' ? 0 : target === 'medium' ? 1 : maximum;
+        await control.press(current >= desired ? 'ArrowLeft' : 'ArrowRight');
+        // React updates the thumb and its label after the key event returns.
+        await page.waitForFunction(({ current, announcement }) => {
+          const control = [...document.querySelectorAll('[data-reasoning-slider="true"]')].find(el => el.getClientRects().length);
+          return Number(control?.querySelector('[role="slider"]')?.getAttribute('aria-valuenow')) !== current
+            && control?.closest('[role="menu"]')?.querySelector('[role="status"]')?.textContent !== announcement;
+        }, { current, announcement }, { timeout: 1500 });
       }
-      const current = Number(await thumb.getAttribute('aria-valuenow'));
-      const desired = target === 'instant' ? 0 : target === 'medium' ? 1 : maximum;
-      await control.press(current >= desired ? 'ArrowLeft' : 'ArrowRight');
-    }
-    throw new Error('GPT_WEB_REASONING_UNAVAILABLE');
-  } catch {
+    } catch { /* Selection happens before dispatch; reopening the menu is safe. */ }
     await page.keyboard.press('Escape').catch(() => {});
-    throw new Error('GPT_WEB_REASONING_UNAVAILABLE');
   }
+  throw new Error('GPT_WEB_REASONING_UNAVAILABLE');
 }
 
 export function parseConversation(messages, questions, requestId, parentRequestId) {

@@ -638,6 +638,24 @@ test('reasoning selector changes Instant to verified High and rejects a menu tha
     assert.equal(await selectWebReasoning(page), 'High');
     assert.equal(await page.evaluate(() => window.keys), 6);
     await page.evaluate(() => {
+      const control = document.querySelector('[data-reasoning-slider]');
+      control.addEventListener('keydown', e => {
+        if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+        e.stopPropagation();
+        setTimeout(() => {
+          const thumb = document.querySelector('[role=slider]');
+          const n = Math.max(0, Math.min(2, Number(thumb.getAttribute('aria-valuenow')) + (e.key === 'ArrowRight' ? 1 : -1)));
+          thumb.setAttribute('aria-valuenow', String(n));
+          document.querySelector('[role=status]').textContent = window.levels[n] + ', ' + (n + 1) + ' из 3.';
+          document.querySelector('button').textContent = 'Уровень усилий рассуждения' + window.levels[n];
+        }, 100);
+      });
+    });
+    assert.equal(await selectWebReasoning(page, 'instant'), 'Instant');
+    assert.equal(await selectWebReasoning(page, 'medium'), 'Medium');
+    assert.equal(await selectWebReasoning(page, 'high'), 'High');
+
+    await page.evaluate(() => {
       document.querySelector('[role=slider]').setAttribute('aria-valuenow', '0');
       document.querySelector('[role=slider]').setAttribute('aria-valuemax', '1');
       document.querySelector('[role=status]').textContent = 'Instant, 1 из 2.';

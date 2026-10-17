@@ -37,6 +37,7 @@ const errors = { SERVICE_UNAVAILABLE: 'Запустите Moodle Batch на ко
   UNRESOLVED_SUBMISSION: 'Есть вопросы без надёжного ответа. Отправка остановлена.', MOODLE_PREFLIGHT_REQUIRED: 'Moodle требует подтвердить начало попытки. Откройте тест и подтвердите условия, затем запустите его здесь — активная попытка будет продолжена.',
   QUESTION_PACKET_TOO_LARGE: 'Один вопрос превышает размер запроса модели. Решение остановлено; попытка не отправлена.',
   SERVICE_RESTARTED: 'Сервис был перезапущен. Проверьте последнюю попытку перед новым запуском.', JOB_ALREADY_RUNNING: 'Другой запуск уже выполняется.' };
+errors.GPT_WEB_REASONING_UNAVAILABLE = 'Не удалось выбрать уровень размышления ChatGPT. Запрос не отправлен. Повторите запуск после загрузки меню модели.';
 errors.GPT_EXTENSION_CONTEXT_UNAVAILABLE = 'Нет доступа к браузеру ChatGPT. Откройте Яндекс и разрешите подключение Playwright Extension.';
 errors.GPT_WEB_CONVERSATION_UNAVAILABLE = 'Сохранённая беседа ChatGPT недоступна (404). Проверьте аккаунт и наличие чата. Повторный запрос не отправляется.';
 errors.GPT_WEB_CONVERSATION_ACCESS_DENIED = 'ChatGPT не разрешил прочитать беседу. Проверьте вход в тот же аккаунт в браузере.';
