@@ -135,6 +135,34 @@ test('legacy recovery reads and validates the original full response', async () 
   } finally { await rm(f.dir, { recursive: true, force: true }); }
 });
 
+test('stored prompts recover through Web identity links and punctuation escaping without parsing altered JSON', async () => {
+  for (const corrupt of [false, 'question', 'quote', 'link']) {
+    const f = await fixture();
+    try {
+      const parent = digest('completed parent');
+      const prompt = f.messages[0].text.replace('Which category?', 'Which category at https://example.test/a_b_(c)?');
+      f.saved.request = { prompt, parentRequestId: [parent], reasoning: 'High' };
+      const actual = prompt.replaceAll('https://example.test/a_b_(c)', '[https://example.test/a_b_(c)](https://example.test/a_b_(c))')
+        .replace(/[:_()]/gu, char => '\\' + char);
+      let changed = actual;
+      if (corrupt === 'question') changed = changed.replace('Which category', 'Which other category');
+      if (corrupt === 'quote') changed = changed.replace('explicitly identifies Alpha', 'never identifies Alpha');
+      if (corrupt === 'link') changed = changed.replace(']\\(https', ']\\(httpx');
+      const messages = [{ role: 'user', text: 'An old rich-text parent ' + parent },
+        { role: 'user', text: changed }, f.messages[1]];
+      await writeFile(f.path, JSON.stringify(f.saved));
+      await writeFile(join(f.dir, parent + '.json'), JSON.stringify({ state: 'complete', result: { conversationUrl: f.saved.conversationUrl } }));
+      if (corrupt) {
+        await assert.rejects(recoverWeb(f.path, { readMessages: async () => messages, verifySemantics: () => assert.fail('foreign prompt') }), /GPT_WEB_RECOVERY_SCOPE_MISMATCH/);
+        assert.deepEqual(JSON.parse(await readFile(f.path)), f.saved);
+      } else {
+        const result = await recoverWeb(f.path, { readMessages: async () => messages, verifySemantics: verified });
+        assert.equal(result.answers.length, 2); assert.equal(result.reasoning, 'High');
+      }
+    } finally { await rm(f.dir, { recursive: true, force: true }); }
+  }
+});
+
 test('unknown semantic outcome cannot be bypassed by a recovered subset or different proof payload', async () => {
   const f = await fixture({ snapshot: true });
   try {

@@ -367,7 +367,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   else await page.keyboard.press('Escape');
   const prompt = webPrompt(questions, context, requestId);
   await composer.fill(prompt);
-  if (!(await composer.innerText()).includes(requestId)) throw new Error('GPT_WEB_DRAFT_MISMATCH');
+  if (await composer.innerText() !== prompt) throw new Error('GPT_WEB_DRAFT_MISMATCH');
   if (conversationUrl && page.url() !== conversationUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   const send = page.locator('button[data-testid="send-button"],button[aria-label="Отправить"],button[aria-label="Send"]').first();
   try { await send.waitFor({ state: 'visible', timeout: 5000 }); }
@@ -420,15 +420,27 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
       || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(saved.conversationUrl || '')) reject();
   const messages = saved.response && saved.request?.prompt ? null
     : await retryConversationRead(() => readMessages(saved.conversationUrl, saved.requestId), onWait);
-  let packets;
-  try { packets = (messages ? messages.filter(m => m.role === 'user').map(m => m.text) : [saved.request.prompt])
-    .map(text => JSON.parse(text.split('\n').at(-1))); } catch { reject(); }
-  const packet = packets.at(-1);
-  const parents = messages ? packets.slice(0, -1).map(p => p.requestId) : saved.request.parentRequestId;
+  let packet, parents;
+  try {
+    if (saved.request?.prompt) {
+      packet = JSON.parse(saved.request.prompt.split('\n').at(-1));
+      parents = saved.request.parentRequestId;
+      if (messages) {
+        const users = messages.filter(m => m.role === 'user');
+        const actual = users.at(-1)?.text;
+        // The Web editor escapes punctuation and expands bare URLs into identity
+        // links. Accept only a full match to the original, never repaired JSON.
+        const plain = actual?.replace(/\\([:_()])/gu, '$1').replace(/\[(https:\/\/[^\s[\]]+)\]\(\1\)/gu, '$1');
+        if ((actual !== saved.request.prompt && plain !== saved.request.prompt)
+            || users.length !== parents.length + 1 || parents.some((id, i) => !users[i].text?.includes(id))) reject();
+      }
+    } else {
+      const packets = messages.filter(m => m.role === 'user').map(m => JSON.parse(m.text.split('\n').at(-1)));
+      packet = packets.at(-1); parents = packets.slice(0, -1).map(p => p.requestId);
+    }
+  } catch { reject(); }
   if (!Array.isArray(parents) || !parents.every(validId) || !validId(packet?.requestId)
       || packet.requestId !== saved.requestId || new Set([...parents, packet.requestId]).size !== parents.length + 1) reject();
-  if (saved.request && (JSON.stringify(saved.request.parentRequestId) !== JSON.stringify(parents)
-      || (messages && messages.filter(m => m.role === 'user').at(-1).text !== saved.request.prompt))) reject();
   for (const id of parents) {
     const parent = JSON.parse(await readFile(join(dirname(journalPath), id + '.json'), 'utf8'));
     if (parent.state !== 'complete' || parent.result?.conversationUrl !== saved.conversationUrl) reject();
