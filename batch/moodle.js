@@ -208,7 +208,7 @@ export async function openParser() {
             textFieldSize: texts.length === 1 && Number.isInteger(texts[0].size) ? texts[0].size : null,
             textFieldName: texts.length === 1 ? texts[0].name : null,
             sequenceFieldName: control?.name || null, sequenceValue: control?.value || null,
-            behaviour: ['deferredfeedback', 'adaptivenopenalty'].find(mode => q.classList.contains(mode)) || null,
+            behaviour: ['deferredfeedback', 'adaptivenopenalty', 'adaptive'].find(mode => q.classList.contains(mode)) || null,
             feedback: ['correct', 'incorrect', 'partiallycorrect'].find(s => q.classList.contains(s)) || 'unconfirmed',
             displayedRightAnswer: cleanText(q.querySelector('.rightanswer')) || null,
           };

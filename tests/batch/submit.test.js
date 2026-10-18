@@ -157,14 +157,16 @@ test('media submissions require confirmed memory and unchanged native bank ident
   assert.throws(() => buildSubmission(attempt, foreign), /SUBMISSION_SCOPE_MISMATCH/);
 });
 
-test('adaptive without penalties finishes with responses and no per-question check actions', () => {
+test('adaptive modes finish with responses and no per-question check actions', () => {
   const attempt = fixture();
-  for (const q of attempt.questions) q.behaviour = 'adaptivenopenalty';
-  const plan = buildSubmission(attempt, attempt.questions);
-  assert.equal(plan.fields.finishattempt, '1');
-  assert.equal(plan.fields['q100:1_answer'], '1');
-  assert.equal(plan.fields['q100:3_sub0'], '2');
-  assert.ok(!Object.keys(plan.fields).some(name => name.endsWith('-submit')));
+  for (const mode of ['adaptivenopenalty', 'adaptive']) {
+    for (const q of attempt.questions) q.behaviour = mode;
+    const plan = buildSubmission(attempt, attempt.questions);
+    assert.equal(plan.fields.finishattempt, '1');
+    assert.equal(plan.fields['q100:1_answer'], '1');
+    assert.equal(plan.fields['q100:3_sub0'], '2');
+    assert.ok(!Object.keys(plan.fields).some(name => /(?:-|:)submit$/u.test(name)));
+  }
   attempt.questions[0].behaviour = 'interactive';
   assert.throws(() => buildSubmission(attempt, attempt.questions), /UNSUPPORTED_QUESTION_BEHAVIOUR/);
 });
@@ -208,8 +210,10 @@ test('offline parser retains response form and deferred feedback for request pre
     const collected = await collectTest(async () => parsed, attempt.sourceUrl);
     const questions = collected.questions.map(q => ({ ...q, memory: { status: 'unresolved', excludedAnswers: [] }, decision: { status: 'candidate', answer: 'Term' } }));
     assert.equal(buildSubmission(collected, questions).fields['q100:1_answer'], 'Term');
-    const adaptive = await parser.parse(html.replace('shortanswer deferredfeedback', 'shortanswer adaptivenopenalty'), attempt.sourceUrl);
-    assert.equal(adaptive.questions[0].behaviour, 'adaptivenopenalty');
+    for (const mode of ['adaptivenopenalty', 'adaptive']) {
+      const adaptive = await parser.parse(html.replace('shortanswer deferredfeedback', 'shortanswer ' + mode), attempt.sourceUrl);
+      assert.equal(adaptive.questions[0].behaviour, mode);
+    }
     const viewHtml = '<body id="page-mod-quiz-view" data-course-id="10" data-quiz-id="20" data-user-scope="u1"><form method="post" action="/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"></form></body>';
     const view = await parser.parse(viewHtml, `${attempt.origin}/mod/quiz/view.php?id=20`);
     assert.equal(buildStart(view).fields.sesskey, 'synthetic');

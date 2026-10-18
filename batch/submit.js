@@ -57,7 +57,7 @@ export function buildSubmission(test, questions) {
     if (!original || questionKey(original) !== questionKey(q) || original.bankQuestionId !== q.bankQuestionId
         || q.attemptId !== test.attemptId || q.quizId !== test.quizId
         || q.userScope !== test.userScope || q.courseId !== test.courseId || q.origin !== test.origin) throw new Error('SUBMISSION_SCOPE_MISMATCH');
-    if (!['deferredfeedback', 'adaptivenopenalty'].includes(q.behaviour)) throw new Error('UNSUPPORTED_QUESTION_BEHAVIOUR');
+    if (!['deferredfeedback', 'adaptivenopenalty', 'adaptive'].includes(q.behaviour)) throw new Error('UNSUPPORTED_QUESTION_BEHAVIOUR');
     if (['conflict', 'unsupported'].includes(q.memory?.status) || !['confirmed', 'candidate'].includes(q.decision?.status)) {
       const error = new Error('UNRESOLVED_SUBMISSION');
       error.unresolvedQuestions = questions.filter(item => ['conflict', 'unsupported'].includes(item.memory?.status)
