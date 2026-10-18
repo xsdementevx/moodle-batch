@@ -272,7 +272,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,
             ...(answer.reasoning || saved.result.reasoning ? { reasoning: answer.reasoning || saved.result.reasoning } : {}) }); }
           catch { /* a malformed old result never becomes a reusable answer */ }
-        } else if (binding && saved.result.recovered && (!decisions.has(q.slot)
+        } else if (binding && (!decisions.has(q.slot)
           || (decisions.get(q.slot).status === 'needs_review' && reasoningLevel(saved.result.reasoning) > reasoningLevel(decisions.get(q.slot).reasoning)))) {
           const raw = saved.result.answers.find(a => a.slot === q.slot);
           const review = raw && reviewEvidenceSupport(reviewConfidence(raw), q);

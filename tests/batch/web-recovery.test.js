@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digest, optionId } from '../../batch/answers.js';
 import { questionFingerprint, solveTest, pendingModelTests } from '../../batch/solve.js';
-import { webPrompt, recoverWeb, webSolver, sameWebPrompt } from '../../batch/web.js';
+import { webPrompt, recoverWeb, webSolver, sameWebPrompt, webDraftText } from '../../batch/web.js';
 
 const id = digest('recovery');
 const quote = 'The original course explicitly identifies Alpha as the correct category.';
@@ -42,6 +42,52 @@ test('draft integrity accepts paragraph spacing while preserving every JSON valu
   assert.equal(sameWebPrompt(prompt.slice(0, -1), prompt), false);
   assert.equal(sameWebPrompt(prompt + '\nChanged instructions', prompt), false);
   assert.equal(sameWebPrompt(id, prompt), false);
+});
+
+test('editor paragraphs preserve JSON exactly without visual URL line breaks', () => {
+  const prompt = webPrompt(qs, context, id);
+  const paragraph = textContent => ({ nodeName: 'P', textContent, querySelector: () => null });
+  const editor = { childNodes: prompt.split('\n').map(paragraph) };
+  assert.equal(webDraftText(editor), prompt);
+  editor.childNodes.at(-1).textContent = editor.childNodes.at(-1).textContent.replace('Which category?', 'Which other category?');
+  assert.notEqual(webDraftText(editor), prompt);
+  editor.childNodes.at(-1).querySelector = () => ({});
+  assert.equal(webDraftText(editor), null, 'an unexpected real line break must not disappear');
+  assert.equal(webDraftText({ childNodes: [{ nodeName: 'DIV', textContent: prompt }] }), null);
+});
+
+test('normally completed uncertainty resumes only missing reasoning and retains a completed uncertain High', async () => {
+  const { checkpointed } = await import('../../batch/solve.js');
+  for (const reasoning of ['Instant', 'Medium', 'High']) {
+    const f = await fixture({ snapshot: true, uncertain: true, reasoning });
+    const recovery = webSolver({ extension: true, connect: () => assert.fail('no browser'), verifySemantics: verified });
+    try {
+      await recovery.recover(f.path, { questions: qs, context });
+      const saved = JSON.parse(await readFile(f.path));
+      delete saved.result.recovered;
+      delete saved.result.recoveryQuestions;
+      await writeFile(f.path, JSON.stringify(saved));
+      const calls = [], parents = [id];
+      const web = async (batch, material, opts) => {
+        calls.push(opts.reasoning);
+        assert.equal(opts.continueUrl, f.saved.conversationUrl);
+        assert.deepEqual(opts.parentRequestId, parents);
+        assert.deepEqual(batch.map(q => q.slot), [qs[0].slot], 'accepted sibling is retained');
+        const result = await checkpointed(opts.journalPath, async () => ({ reasoning: opts.reasoning,
+          conversationUrl: opts.continueUrl, continuation: { requestId: opts.requestId, parentRequestId: [...parents] },
+          answers: batch.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: null, status: 'needs_review',
+            reviewReason: 'model_uncertain', confidence: 0.5 })) }), opts.questionIds, opts.bindings);
+        parents.push(opts.requestId);
+        return result.answers;
+      };
+      for (let n = 0; n < 2; n++) {
+        const result = await solveTest(qs, context, { journalDir: f.dir, web, jev: () => assert.fail('no new Jev') });
+        assert.equal(result[0].decision.status, 'needs_review');
+        assert.equal(result[1].decision.status, 'candidate');
+      }
+      assert.deepEqual(calls, reasoning === 'Instant' ? ['medium', 'high'] : reasoning === 'Medium' ? ['high'] : []);
+    } finally { await recovery.close(); await rm(f.dir, { recursive: true, force: true }); }
+  }
 });
 
 test('a selected quiz recovers the whole original packet without connecting or resending ChatGPT', async () => {

@@ -598,10 +598,11 @@ test('verified cached answers survive regrouping but changed wording, context or
     delete saved.result.answers[0].semanticVerified;
     await writeFile(path, JSON.stringify(saved));
     let rechecked = false;
-    await solveTest([question], context, { journalDir: dir, web: async () => {
+    const [unverified] = await solveTest([question], context, { journalDir: dir, web: async () => {
       rechecked = true; return [{ ...saved.result.answers[0], semanticVerified: true }];
     } });
-    assert.equal(rechecked, true, 'regrouped old cache cannot skip semantic checks');
+    assert.equal(rechecked, false, 'legacy result without a continuation must not be resent');
+    assert.equal(unverified.decision.status, 'needs_review', 'regrouped old cache cannot skip semantic checks');
     for (const [changed, material] of [[{ ...question, text: 'A changed question?' }, context], [question, { ...context, contextHash: 'new' }],
       [{ ...question, memory: { ...question.memory, excludedAnswers: [[options[0].id]] } }, context]]) {
       let called = false;
@@ -611,7 +612,7 @@ test('verified cached answers survive regrouping but changed wording, context or
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('unsupported deadline claims cannot be accepted from fresh or regrouped cached answers', async () => {
+test('unsupported deadline claims require direct evidence and legacy uncertainty is not resent', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-deadline-review-'));
   const context = { status: 'missing', text: '', contextHash: null };
   const choices = ['срок не определен', 'в последний день работы'].map(text => ({ id: optionId(text), text }));
@@ -621,6 +622,10 @@ test('unsupported deadline claims cannot be accepted from fresh or regrouped cac
   try {
     await writeFile(join(dir, `${'d'.repeat(64)}.json`), JSON.stringify({ state: 'complete',
       bindings: [{ slot: '1', fingerprint: questionFingerprint(question, context) }], result: { answers: [unsupported] } }));
+    const [legacy] = await solveTest([question], context, { journalDir: dir, web: () => assert.fail('no verified continuation') });
+    assert.equal(legacy.decision.status, 'needs_review');
+    assert.equal(legacy.decision.reviewReason, 'evidence_not_supportive');
+    await rm(join(dir, `${'d'.repeat(64)}.json`));
     const efforts = [];
     const [result] = await solveTest([question], context, { journalDir: dir, web: async (batch, material, opts) => {
       efforts.push(opts.reasoning);
@@ -739,7 +744,9 @@ test('borderline completed answers cannot bypass Medium and High clarification t
   const savedAnswer = { slot: question.slot, status: 'candidate', answer: [options[0].id], provider: 'gpt_web', evidenceVerified: true, confidence: 0.86 };
   try {
     const journalPath = join(dir, `${'c'.repeat(64)}.json`);
-    await writeFile(journalPath, JSON.stringify({ state: 'complete', bindings: [{ slot: question.slot, fingerprint: questionFingerprint(question, context) }], result: { answers: [savedAnswer] } }));
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', bindings: [{ slot: question.slot, fingerprint: questionFingerprint(question, context) }],
+      result: { answers: [savedAnswer], reasoning: 'Instant', conversationUrl: 'https://chatgpt.com/c/original',
+        continuation: { requestId: 'c'.repeat(64), parentRequestId: [] } } }));
     const cachedWeb = webSolver({ extension: true, connect: () => assert.fail('completed request must not be resent') });
     const [old] = await cachedWeb([question], context, { journalPath });
     assert.equal(old.status, 'needs_review'); assert.equal(old.evidenceVerified, false);
@@ -749,7 +756,7 @@ test('borderline completed answers cannot bypass Medium and High clarification t
       efforts.push(opts.reasoning);
       return batch.map(q => ({ ...savedAnswer, slot: q.slot, confidence: opts.reasoning === 'high' ? 0.95 : 0.86 }));
     } });
-    assert.deepEqual(efforts, ['instant', 'medium', 'high']);
+    assert.deepEqual(efforts, ['medium', 'high']);
     assert.equal(solved.decision.status, 'candidate'); assert.equal(solved.decision.confidence, 0.95);
     assert.equal(solved.decision.cached, undefined);
   } finally { await rm(dir, { recursive: true, force: true }); }

@@ -73,6 +73,15 @@ export function webPrompt(questions, context, requestId) {
 export const sameWebPrompt = (actual, expected) => typeof actual === 'string'
   && actual.replace(/\n+/gu, '\n') === expected.replace(/\n+/gu, '\n');
 
+// Read the editor's paragraphs directly: innerText inserts visual line breaks
+// around auto-linked URLs, including URLs inside JSON strings.
+export function webDraftText(editor) {
+  const paragraphs = [...editor.childNodes];
+  if (!paragraphs.length || paragraphs.some(p => p.nodeName !== 'P')) return editor.innerText ?? null;
+  if (paragraphs.some(p => p.querySelector('br'))) return null;
+  return paragraphs.map(p => p.textContent).join('\n');
+}
+
 export function parseWeb(text, questions, requestId, citations) {
   const cleaned = text.trim().replace(/^<(escape|CodeBlock)\b[^>]*>([\s\S]*)<\/\1>$/u, '$2').trim()
     .replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
@@ -372,7 +381,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   else await page.keyboard.press('Escape');
   const prompt = webPrompt(questions, context, requestId);
   await composer.fill(prompt);
-  if (!sameWebPrompt(await composer.innerText(), prompt)) throw new Error('GPT_WEB_DRAFT_MISMATCH');
+  if (await composer.evaluate(webDraftText) !== prompt) throw new Error('GPT_WEB_DRAFT_MISMATCH');
   if (conversationUrl && page.url() !== conversationUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   const send = page.locator('button[data-testid="send-button"],button[aria-label="Отправить"],button[aria-label="Send"]').first();
   try { await send.waitFor({ state: 'visible', timeout: 5000 }); }
