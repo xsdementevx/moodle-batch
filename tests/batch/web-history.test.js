@@ -58,11 +58,14 @@ test('native history waits for its body, verifies parents and reads the reply wi
       await loading; await route.fulfill({ json: data() });
     });
     const started = page.waitForRequest('**/backend-api/conversations/owned-history');
-    await openWebPage(page, target); await started;
+    const opening = openWebPage(page, target);
+    await started;
+    let opened = false; opening.then(() => { opened = true; });
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(opened, false);
+    release(); await opening;
     let done = false;
     const pending = verifyWebParents(page, ['nonce']).then(() => { done = true; });
-    await new Promise(resolve => setImmediate(resolve)); assert.equal(done, false);
-    release(); await pending;
+    await pending; assert.equal(done, true);
     const question = { slot: '1', type: 'choice', text: 'Alpha?', options: [{ id: 'alpha', text: 'Alpha' }], memory: { excludedAnswers: [] } };
     assert.equal((await readWebResult(page, [question], 'nonce')).answers[0].answer[0], 'alpha');
     await assert.rejects(verifyWebParents(page, ['foreign']), /GPT_WEB_FOREIGN_CONVERSATION/);
@@ -81,6 +84,34 @@ test('native adapter rejects foreign identities and never trusts paginated, trun
   }
   const repeated = data(); repeated.messages.push(repeated.messages.at(-1));
   assert.throws(() => nativeConversationMessages(repeated, 'owned-history'), /INVALID_CONVERSATION/);
+});
+
+test('mapped native history validates node keys and wins over the flat adapter when conversation_id is present', async () => {
+  const page = new EventEmitter(); observeWebHistory(page);
+  const request = { url: () => 'https://chatgpt.com/backend-api/conversation/owned-history', method: () => 'GET', headers: () => ({}) };
+  page.emit('request', request);
+  const mapping = { id: 'owned-history', conversation_id: 'owned-history', current_node: 'answer', mapping: {
+    user: { id: 'user', parent: null, message: { author: { role: 'user' }, content: { content_type: 'text', parts: ['nonce'] } } },
+    answer: { id: 'answer', parent: 'user', message: { author: { role: 'assistant' }, end_turn: true,
+      content: { content_type: 'text', parts: ['answer'] } } },
+  } };
+  page.emit('response', { request: () => request, status: () => 200, ok: () => true, headers: () => ({}), json: async () => mapping });
+  assert.deepEqual((await nativeWebHistory(page, target)).map(message => message.text), ['nonce', 'answer']);
+  page.emit('close');
+
+  const foreignPage = new EventEmitter(); observeWebHistory(foreignPage);
+  foreignPage.emit('request', request);
+  foreignPage.emit('response', { request: () => request, status: () => 200, ok: () => true, headers: () => ({}),
+    json: async () => ({ ...mapping, conversation_id: 'foreign' }) });
+  await assert.rejects(nativeWebHistory(foreignPage, target), /GPT_WEB_SCOPE_MISMATCH/);
+  foreignPage.emit('close');
+
+  const invalidPage = new EventEmitter(); observeWebHistory(invalidPage);
+  invalidPage.emit('request', request);
+  const malformed = { ...mapping, mapping: { ...mapping.mapping, answer: { ...mapping.mapping.answer, id: 'different' } } };
+  invalidPage.emit('response', { request: () => request, status: () => 200, ok: () => true, headers: () => ({}), json: async () => malformed });
+  await assert.rejects(nativeWebHistory(invalidPage, target), /GPT_WEB_INVALID_CONVERSATION/);
+  invalidPage.emit('close');
 });
 
 test('native rate limits hold fallback reads and preserve retry-after; batch reads are labelled separately', async () => {

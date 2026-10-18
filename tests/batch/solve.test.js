@@ -379,7 +379,7 @@ test('original chat waits for delayed hydration without reloading or reading his
     goto: async url => { assert.equal(url, target); loads++; },
     locator: selector => selector.startsWith('iframe') ? { count: async () => 0 }
       : { first: () => ({ waitFor: async options => {
-        assert.equal(options.timeout, 300000); await hydrated;
+        assert.ok(options.timeout > 0 && options.timeout <= 300000); await hydrated;
       } }) },
     evaluate: () => assert.fail('loading must not issue history requests') };
   const pending = openWebPage(page, target, detail => waits.push(detail));

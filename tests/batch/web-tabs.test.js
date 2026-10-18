@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { webSolver, openWebPage } from '../../batch/web.js';
+import { webSolver, openWebPage, readWebResult } from '../../batch/web.js';
 
 test('clarification reuses its owned conversation tab without navigation and preserves a user draft', async () => {
   const root = await mkdtemp(join(tmpdir(), 'batch-tabs-'));
@@ -63,27 +63,61 @@ test('clarification reuses its owned conversation tab without navigation and pre
 });
 
 
-test('a delayed original chat becomes ready in place without a reload or extra history request', async () => {
+test('a delayed original chat waits for its page history response before becoming ready', async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage();
   const target = 'https://chatgpt.com/c/original-chat', requests = [], waits = [];
+  let release;
+  const loading = new Promise(resolve => { release = resolve; });
+  let retryFirst;
+  const pageRetryScheduled = new Promise(resolve => { retryFirst = resolve; });
   try {
     await page.route('https://chatgpt.com/**', async route => {
-      requests.push(route.request().url());
-      assert.equal(route.request().url(), target);
-      await route.fulfill({ contentType: 'text/html', body: '<title>ChatGPT</title><p id="loading">Loading conversation...</p>' });
+      const url = route.request().url(); requests.push(url);
+      if (url === target) return route.fulfill({ contentType: 'text/html', body: '<title>ChatGPT</title><div role="textbox" contenteditable="true"></div><script>window.historyReads=0;async function loadHistory(){window.historyReads++;const response=await fetch("/backend-api/conversation/original-chat");if(!response.ok)setTimeout(loadHistory,5100)}setTimeout(loadHistory,50)</script>' });
+      assert.equal(url, 'https://chatgpt.com/backend-api/conversation/original-chat');
+      if (requests.filter(request => request === url).length === 1) {
+        retryFirst();
+        return route.fulfill({ status: 503 });
+      }
+      await loading;
+      await route.fulfill({ json: { id: 'original-chat', current_node: 'answer', mapping: {
+        user: { id: 'user', parent: null, message: { author: { role: 'user' }, content: { content_type: 'text', parts: ['requestId nonce'] } } },
+        answer: { id: 'answer', parent: 'user', message: { author: { role: 'assistant' }, end_turn: true,
+          content: { content_type: 'text', parts: ['{"requestId":"nonce","answers":[{"slot":"1","answer":["alpha"],"confidence":0.99,"needsReview":false,"sourceUrls":[]}]}'] } } },
+      } } });
     });
-    const pending = openWebPage(page, target, detail => waits.push(detail));
-    await page.locator('#loading').waitFor();
-    await page.waitForFunction(() => document.readyState === 'complete');
-    await page.evaluate(() => {
-      document.querySelector('#loading').remove();
-      const editor = document.createElement('div'); editor.contentEditable = 'true';
-      editor.setAttribute('role', 'textbox'); document.body.append(editor);
-    });
+    let done = false;
+    const pending = openWebPage(page, target, detail => waits.push(detail)).then(() => { done = true; });
+    await page.locator('[role="textbox"]').waitFor();
+    await pageRetryScheduled;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(done, false, 'wait until the original chat history body has loaded');
+    assert.equal(waits.length, 1, 'keep the waiting indicator active');
+    await page.waitForFunction(() => window.historyReads === 2, undefined, { timeout: 10000 });
+    assert.equal(done, false, 'wait for the page-native retry and its complete response');
+    release();
     await pending;
-    assert.deepEqual(requests, [target]);
+    const question = { slot: '1', type: 'choice', text: 'Alpha?', rows: [], options: [{ id: 'alpha', text: 'Alpha' }], memory: { excludedAnswers: [] } };
+    assert.equal((await readWebResult(page, [question], 'nonce')).answers[0].answer[0], 'alpha');
+    assert.deepEqual(requests, [target, 'https://chatgpt.com/backend-api/conversation/original-chat', 'https://chatgpt.com/backend-api/conversation/original-chat']);
     assert.equal(page.url(), target); assert.equal(browser.contexts()[0].pages().length, 1);
     assert.ok(waits[0].retryAt); assert.equal(waits.at(-1), null);
+  } finally { release(); await browser.close(); }
+});
+
+test('an unavailable original chat reports its history error without waiting for a composer timeout', async () => {
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const target = 'https://chatgpt.com/c/unavailable-chat';
+  try {
+    await page.route('https://chatgpt.com/**', route => {
+      if (route.request().url() === target) return route.fulfill({ contentType: 'text/html', body:
+        '<title>ChatGPT</title><script>fetch("/backend-api/conversation/unavailable-chat")</script>' });
+      return route.fulfill({ status: 404 });
+    });
+    const started = Date.now();
+    await assert.rejects(openWebPage(page, target), /GPT_WEB_CONVERSATION_UNAVAILABLE/);
+    assert.ok(Date.now() - started < 3000, 'terminal history errors should not wait for the composer deadline');
   } finally { await browser.close(); }
 });

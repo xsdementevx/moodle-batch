@@ -65,6 +65,77 @@ export function checkWebReadLimit(page, url) {
   if (interval > 0) throw Object.assign(new Error('GPT_WEB_RESPONSE_NOT_READY'), { retryMs: interval });
 }
 
+// Wait for the page's history request (including its own retry); never fetch history here.
+export async function waitForWebHistory(page, url, deadline = Date.now() + 300000) {
+  const id = new URL(url).pathname.split('/').at(-1);
+  const state = histories.get(page);
+  if (!state) return undefined;
+  const matches = request => {
+    const target = new URL(request.url());
+    return request.method() === 'GET' && target.origin === 'https://chatgpt.com'
+      && [`/backend-api/conversation/${id}`, `/backend-api/conversations/${id}`].includes(target.pathname);
+  };
+  let previous;
+  while (true) {
+    let entry = state.entries.get(id);
+    if (!entry || entry === previous) {
+      const timeout = Math.min(300000, deadline - Date.now());
+      if (timeout <= 0) throw new Error('GPT_WEB_HISTORY_LOAD_TIMEOUT');
+      await page.waitForRequest(matches, { timeout }).catch(() => { throw new Error('GPT_WEB_HISTORY_LOAD_TIMEOUT'); });
+      entry = state.entries.get(id);
+    }
+    if (!entry) throw new Error('GPT_WEB_HISTORY_NOT_OBSERVED');
+    let timer;
+    let result;
+    try {
+      const timeout = Math.min(300000, deadline - Date.now());
+      if (timeout <= 0) throw new Error('GPT_WEB_HISTORY_LOAD_TIMEOUT');
+      result = await Promise.race([entry.promise, new Promise(resolve => {
+        timer = setTimeout(() => resolve({ error: 'GPT_WEB_HISTORY_LOAD_TIMEOUT' }), timeout);
+      })]);
+    } finally { clearTimeout(timer); }
+    if (!result.error) {
+      if (!result.data) throw new Error('GPT_WEB_HISTORY_UNAVAILABLE');
+      return result.data;
+    }
+    if (![429, 500, 502, 503, 504].includes(result.httpStatus)) throw Object.assign(new Error(result.error), result);
+    const retryAt = result.retryAt || Date.now() + (result.retryMs || 0);
+    const retryDelay = retryAt - Date.now();
+    if (retryDelay > 0) {
+      if (Date.now() + retryDelay >= deadline) throw Object.assign(new Error(result.error), result);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+    previous = entry;
+  }
+}
+
+function messageFromNode(message) {
+  return { role: message.author?.role, toolName: message.author?.name, endTurn: message.end_turn,
+    text: message.content?.content_type === 'text' && (message.author?.role === 'user' || message.end_turn)
+      ? message.content.parts.filter(part => typeof part === 'string').join('\n') : undefined,
+    sources: message.author?.role === 'tool' && message.author?.name === 'web.run'
+      ? (message.metadata?.search_result_groups || []).flatMap(group => (group.entries || []).map(entry => entry.url)) : [],
+  };
+}
+
+function mappedConversationMessages(data, id) {
+  if ([data.id, data.conversation_id].some(value => value != null && value !== id)) throw new Error('GPT_WEB_SCOPE_MISMATCH');
+  const mapping = data.mapping;
+  let node = mapping?.[data.current_node];
+  if (!node) return undefined;
+  const messages = [], seen = new Set();
+  let nodeId = data.current_node;
+  while (node) {
+    if (!node.id || node.id !== nodeId || seen.has(nodeId) || seen.size >= 100) throw new Error('GPT_WEB_INVALID_CONVERSATION');
+    seen.add(nodeId);
+    if (node.message) messages.unshift(messageFromNode(node.message));
+    if (node.parent && !mapping[node.parent]) return undefined;
+    nodeId = node.parent;
+    node = nodeId ? mapping[nodeId] : null;
+  }
+  return messages;
+}
+
 export function clearWebHistory(page) {
   const state = histories.get(page);
   if (state) { state.entries.clear(); state.generation = undefined; state.armed?.resolve(false); state.armed = undefined; }
@@ -131,12 +202,7 @@ export function nativeConversationMessages(data, id) {
       || !Array.isArray(data.messages) || !data.messages.length || data.messages.length > 100
       || data.messages.at(-1)?.id !== data.current_node) return undefined;
   if (new Set(data.messages.map(m => m.id)).size !== data.messages.length) throw new Error('GPT_WEB_INVALID_CONVERSATION');
-  return data.messages.map(m => ({ role: m.author?.role, toolName: m.author?.name, endTurn: m.end_turn,
-    text: m.content?.content_type === 'text' && (m.author?.role === 'user' || m.end_turn)
-      ? m.content.parts.filter(p => typeof p === 'string').join('\n') : undefined,
-    sources: m.author?.role === 'tool' && m.author?.name === 'web.run'
-      ? (m.metadata?.search_result_groups || []).flatMap(g => (g.entries || []).map(e => e.url)) : [],
-  }));
+  return data.messages.map(messageFromNode);
 }
 
 export async function nativeWebHistory(page, url, requestId) {
@@ -152,7 +218,8 @@ export async function nativeWebHistory(page, url, requestId) {
       if ([429, 500, 502, 503, 504].includes(result.httpStatus) && Date.now() >= result.retryAt) return undefined;
       throw Object.assign(new Error(result.error), result);
     }
-    const messages = result.messages || (result.data?.conversation_id ? nativeConversationMessages(result.data, id) : undefined);
+    const messages = result.messages || (result.data?.mapping ? mappedConversationMessages(result.data, id)
+      : result.data?.conversation_id ? nativeConversationMessages(result.data, id) : undefined);
     if (requestId && (!messages?.some(m => m.role === 'user' && m.text?.includes(requestId))
         || !messages.slice(messages.findLastIndex(m => m.role === 'user') + 1).some(m => m.role === 'assistant' && m.endTurn && m.text?.trim()))) return undefined;
     return messages;

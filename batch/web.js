@@ -1,7 +1,7 @@
 import { readFile, access, writeFile, rename, appendFile, mkdir, readdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { dirname, join, basename } from 'node:path';
-import { observeWebHistory, nativeWebHistory, clearWebHistory, armWebGeneration, waitForWebGeneration, rememberWebRead, checkWebReadLimit } from './web-history.js';
+import { observeWebHistory, nativeWebHistory, clearWebHistory, armWebGeneration, waitForWebGeneration, rememberWebRead, checkWebReadLimit, waitForWebHistory } from './web-history.js';
 import { answerSignature, isExcludedAnswer } from './answers.js';
 import { cookieState, openParser } from './moodle.js';
 import { checkpointed, selectContext, MIN_WEB_CONFIDENCE, reviewConfidence, recoveredScopeMatches } from './solve.js';
@@ -102,13 +102,15 @@ export function parseWeb(text, questions, requestId, citations) {
   });
 }
 
-export async function readyWeb(page) {
+export async function readyWeb(page, deadline = Date.now() + 300000) {
   // Background tabs can suspend hydration and menu updates in the personal browser.
   await page.bringToFront?.();
   if (/just a moment|checking your browser|verify you are human|один момент|проверка браузера/iu.test(await page.title())
       || await page.locator('iframe[src*="challenges.cloudflare.com"]').count()) throw new Error('GPT_WEB_CHALLENGE');
   const composer = page.locator('#prompt-textarea:visible,[contenteditable="true"][role="textbox"]:visible').first();
-  try { await composer.waitFor({ state: 'visible', timeout: 300000 }); }
+  const timeout = Math.min(300000, deadline - Date.now());
+  if (timeout <= 0) throw new Error('GPT_WEB_HISTORY_LOAD_TIMEOUT');
+  try { await composer.waitFor({ state: 'visible', timeout }); }
   catch { throw new Error('GPT_WEB_LOGIN_OR_UI_UNAVAILABLE'); }
   if (new URL(page.url()).origin !== 'https://chatgpt.com') throw new Error('GPT_WEB_SCOPE_MISMATCH');
   return composer;
@@ -261,22 +263,16 @@ async function retryConversationRead(read, onWait) {
 export async function openWebPage(page, target, onWait) {
   observeWebHistory(page);
   const id = /^https:\/\/chatgpt\.com\/c\/([a-zA-Z0-9-]+)$/u.exec(target)?.[1];
-  // The composer may appear before React starts fetching the pinned history.
-  const started = id && page.waitForRequest?.(request => {
-    const url = new URL(request.url());
-    return url.origin === 'https://chatgpt.com' && request.method() === 'GET'
-      && [`/backend-api/conversation/${id}`, `/backend-api/conversations/${id}`].includes(url.pathname);
-  }, { timeout: 15000 }).catch(() => null);
+  const deadline = Date.now() + 300000;
   try {
     await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 30000 });
   } catch (error) {
     if (error.name !== 'TimeoutError' || page.url() !== target) throw error;
   }
   if (id && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
-  await onWait?.({ retryAt: Date.now() + 300000 });
+  await onWait?.({ retryAt: deadline });
   try {
-    await readyWeb(page);
-    await started;
+    await Promise.all([readyWeb(page, deadline), id ? waitForWebHistory(page, target, deadline) : undefined]);
     if (id && page.url() !== target) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   } finally { await onWait?.(null); }
 }
