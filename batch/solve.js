@@ -245,10 +245,17 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
   const identity = q => `${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`;
   const questionIds = new Set(unresolved.map(identity));
   const recovered = new Map();
+  const conversationChains = [], pendingConversations = new Set();
   // Regrouping or changing reasoning must not bypass a previously pending request.
   const journals = await readdir(journalDir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
   for (const name of journals.filter(modelJournal)) {
     const saved = JSON.parse(await readFile(join(journalDir, name), 'utf8'));
+    if (saved.state === 'pending' && saved.conversationUrl) pendingConversations.add(saved.conversationUrl);
+    const chain = saved.result?.continuation;
+    if (saved.state === 'complete' && chain?.requestId + '.json' === name && Array.isArray(chain.parentRequestId)
+      && [...chain.parentRequestId, chain.requestId].every(id => /^[a-f0-9]{64}$/u.test(id))) {
+      conversationChains.push({ url: saved.result.conversationUrl, ids: [...chain.parentRequestId, chain.requestId] });
+    }
     if (saved.state === 'pending' && questionIds.size
       && (!saved.questionIds || saved.questionIds.some(id => questionIds.has(id)))) throw new Error('UNKNOWN_MODEL_OUTCOME');
     if (saved.state === 'complete' && Array.isArray(saved.result?.answers)) {
@@ -293,10 +300,13 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
       || new Set([...chain.parentRequestId, chain.requestId]).size !== chain.parentRequestId.length + 1
       || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(saved.conversationUrl || '')) continue;
     let review = unresolved.filter(q => recovered.get(q.slot)?.name === origin && decisions.get(q.slot)?.status === 'needs_review');
-    const parents = [...chain.parentRequestId, chain.requestId];
+    let parents = [...chain.parentRequestId, chain.requestId];
+    for (const next of conversationChains) if (next.url === saved.conversationUrl && next.ids.length > parents.length
+      && parents.every((id, i) => id === next.ids[i])) parents = [...next.ids];
     for (const reasoning of ['medium', 'high'].slice(reasoningLevel(saved.reasoning))) {
       if (!review.length) break;
       check();
+      if (pendingConversations.has(saved.conversationUrl)) throw new Error('UNKNOWN_MODEL_OUTCOME');
       const batch = review.map(q => ({ ...q, previousUnverifiedAnswer: decisions.get(q.slot).answer,
         reviewReason: decisions.get(q.slot).reviewReason, previousReviewExplanation: decisions.get(q.slot).reviewExplanation,
         previousEvidence: decisions.get(q.slot).evidence, previousRejectedAnswer: decisions.get(q.slot).rejectedAnswer }));
@@ -308,6 +318,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
         reasoning, continueUrl: saved.conversationUrl, parentRequestId: [...parents], questionIds: batch.map(identity), bindings: bindings(batch),
         onWait: webWait(batch, reasoning === 'medium' ? 'Medium' : 'High') });
       parents.push(id);
+      conversationChains.push({ url: saved.conversationUrl, ids: [...parents] });
       for (const answer of answers) decisions.set(answer.slot, reviewEvidenceSupport(reviewConfidence(answer), batch.find(q => q.slot === answer.slot)));
       await notify();
       review = review.filter(q => decisions.get(q.slot)?.status === 'needs_review');

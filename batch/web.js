@@ -394,7 +394,8 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
       });
       pending.evidence = structuredClone(result.answers); failureStage = 'semantic'; await savePending();
       if (verifySemantics) result.answers = await verifySemantics(result.answers, questions, journalPath);
-      return { ...result, reasoning: effort, sourcePolicy: 9 };
+      return { ...result, reasoning: effort, sourcePolicy: 9,
+        continuation: { requestId, parentRequestId: parents } };
     } catch (error) {
       pending.conversationUrl = pending.response?.conversationUrl || conversationUrl || page.url(); pending.failureStage = failureStage;
       pending.failureCode = /^[A-Z][A-Z_0-9]+$/u.test(error.message || '') ? error.message : 'UNKNOWN_WEB_OUTCOME';

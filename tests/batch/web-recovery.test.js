@@ -20,7 +20,7 @@ async function fixture({ snapshot = false, uncertain = false, reasoning = 'Mediu
   const dir = await mkdtemp(join(tmpdir(), 'batch-web-recovery-'));
   const path = join(dir, id + '.json');
   const prompt = webPrompt(qs, context, id);
-  const final = answers.map((a, i) => uncertain && i === 0 ? { ...a, answer: null, needsReview: true, reviewExplanation: 'Two alternatives remain ambiguous.' } : a);
+  const final = answers.map((a, i) => uncertain && (i === 0 || uncertain === 'all') ? { ...a, answer: null, needsReview: true, reviewExplanation: 'Two alternatives remain ambiguous.' } : a);
   const messages = [{ role: 'user', text: prompt }, { role: 'assistant', endTurn: true, text: JSON.stringify({ requestId: id, answers: final }) }];
   const saved = { state: 'pending', requestId: id, questionIds: qs.map(q => q.slot),
     bindings: qs.map(q => ({ slot: q.slot, fingerprint: questionFingerprint(q, context) })), conversationUrl: 'https://chatgpt.com/c/original' };
@@ -47,6 +47,30 @@ test('a selected quiz recovers the whole original packet without connecting or r
   } finally { await web.close(); await rm(f.dir, { recursive: true, force: true }); }
 });
 
+test('separately resumed tests sharing a recovered packet preserve later completed conversation turns', async () => {
+  const f = await fixture({ snapshot: true, uncertain: 'all' });
+  const recovery = webSolver({ extension: true, connect: () => assert.fail('no connection for saved recovery'), verifySemantics: verified });
+  const { checkpointed } = await import('../../batch/solve.js');
+  const parents = [id]; let calls = 0;
+  const web = async (batch, material, opts) => {
+    calls++;
+    assert.equal(opts.reasoning, 'high'); assert.deepEqual(opts.parentRequestId, parents);
+    const saved = await checkpointed(opts.journalPath, async () => ({ reasoning: 'High', conversationUrl: opts.continueUrl,
+      continuation: { requestId: opts.requestId, parentRequestId: [...parents] },
+      answers: batch.map(q => ({ ...answers.find(a => a.slot === q.slot), status: 'candidate', provider: 'gpt_web',
+        evidenceVerified: true, semanticVerified: true })) }), opts.questionIds, opts.bindings);
+    parents.push(opts.requestId); return saved.answers;
+  };
+  web.recover = recovery.recover;
+  try {
+    for (const q of qs) {
+      const [result] = await solveTest([q], context, { journalDir: f.dir, web, jev: () => assert.fail('no Jev restart') });
+      assert.equal(result.decision.status, 'candidate');
+    }
+    assert.equal(calls, 2);
+  } finally { await recovery.close(); await rm(f.dir, { recursive: true, force: true }); }
+});
+
 test('a recovered High uncertain answer is retained across regrouping instead of another Instant request', async () => {
   const f = await fixture({ snapshot: true, uncertain: true, reasoning: 'High' });
   const web = webSolver({ extension: true, connect: () => assert.fail('must not resend'), verifySemantics: verified });
@@ -55,6 +79,17 @@ test('a recovered High uncertain answer is retained across regrouping instead of
       const result = await solveTest([qs[0]], context, { journalDir: f.dir, web, jev: () => assert.fail('must not solve again') });
       assert.equal(result[0].decision.status, 'needs_review'); assert.equal(result[0].decision.reviewReason, 'model_uncertain');
     }
+  } finally { await web.close(); await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('a pending sibling in the same conversation blocks recovered clarification even without question overlap', async () => {
+  const f = await fixture({ snapshot: true, uncertain: true });
+  const web = webSolver({ extension: true, connect: () => assert.fail('do not connect'), verifySemantics: verified });
+  try {
+    await web.recover(f.path, { questions: qs, context });
+    await writeFile(join(f.dir, digest('sibling') + '.json'), JSON.stringify({ state: 'pending',
+      questionIds: ['22:30:1'], conversationUrl: f.saved.conversationUrl }));
+    await assert.rejects(solveTest([qs[0]], context, { journalDir: f.dir, web, jev: () => assert.fail('no Jev') }), /UNKNOWN_MODEL_OUTCOME/);
   } finally { await web.close(); await rm(f.dir, { recursive: true, force: true }); }
 });
 
