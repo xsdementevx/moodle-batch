@@ -6,7 +6,6 @@ import { checkpointed } from './solve.js';
 export function buildStart(view) {
   const form = view.startForm;
   if (view.kind !== 'view' || view.activeUrl || !form || form.method !== 'post') throw new Error('START_UNAVAILABLE');
-  if (form.preflightRequired) throw new Error('MOODLE_PREFLIGHT_REQUIRED');
   const url = new URL(form.action);
   if (url.origin !== view.origin || url.pathname !== '/mod/quiz/startattempt.php' || url.username || url.password
       || [...url.searchParams.keys()].some(key => key !== 'cmid')
@@ -15,6 +14,22 @@ export function buildStart(view) {
   if (Object.keys(fields).length !== form.fields.length || !fields.sesskey || fields.cmid !== view.quizId
       || Object.keys(fields).some(key => !['cmid', 'sesskey', 'forcenew'].includes(key))
       || (fields.forcenew && fields.forcenew !== '0')) throw new Error('UNSUPPORTED_START_FORM');
+  if (form.preflightRequired) {
+    const preflight = form.preflightForm;
+    if (form.secureRequired !== false || !preflight || preflight.method !== 'post' || preflight.action !== url.href
+      || !Array.isArray(preflight.controls) || !Array.isArray(preflight.fields)
+      || new Set(preflight.controls.map(c => c.name)).size !== preflight.controls.length
+      || preflight.controls.some(c => c.disabled || !(c.type === 'hidden' && ['cmid', 'sesskey', '_qf__mod_quiz_preflight_check_form', 'forcenew'].includes(c.name)
+        || c.type === 'submit' && ['submitbutton', 'cancel'].includes(c.name)))) throw new Error('MOODLE_PREFLIGHT_REQUIRED');
+    const confirmed = Object.fromEntries(preflight.fields);
+    const successful = preflight.controls.filter(c => c.type === 'hidden' || c.name === 'submitbutton');
+    if (Object.keys(confirmed).length !== preflight.fields.length || successful.length !== preflight.fields.length
+      || successful.some(c => !Object.hasOwn(confirmed, c.name))
+      || confirmed.cmid !== fields.cmid || confirmed.sesskey !== fields.sesskey
+      || confirmed._qf__mod_quiz_preflight_check_form !== '1' || !confirmed.submitbutton
+      || (confirmed.forcenew && confirmed.forcenew !== '0')) throw new Error('MOODLE_PREFLIGHT_REQUIRED');
+    return { url: preflight.action, fields: confirmed };
+  }
   return { url: url.href, fields };
 }
 

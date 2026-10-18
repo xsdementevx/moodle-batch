@@ -229,6 +229,8 @@ export async function openParser() {
         const startForms = [...document.forms].filter(f => new URL(f.getAttribute('action') || '', base).pathname === '/mod/quiz/startattempt.php');
         const entryForms = startForms.filter(f => !f.querySelector('input[name="_qf__mod_quiz_preflight_check_form"]'));
         const start = entryForms.length === 1 ? entryForms[0] : null;
+        const preflights = startForms.filter(f => f.querySelector('input[name="_qf__mod_quiz_preflight_check_form"]'));
+        const preflight = preflights.length === 1 ? preflights[0] : null;
         const attemptRows = [...document.querySelectorAll('.quizattemptsummary tbody tr')];
         const attemptHeaders = [...document.querySelectorAll('.quizattemptsummary thead th')].map(th => norm(th.textContent));
         const attemptColumn = attemptHeaders.findIndex(text => /^(?:Попытка|Attempt)$/iu.test(text));
@@ -264,6 +266,13 @@ export async function openParser() {
             action: new URL(start.getAttribute('action') || '', base).href, method: start.method,
             fields: [...start.querySelectorAll('input[type=hidden][name]')].map(input => [input.name, input.value]),
             preflightRequired: Boolean(document.querySelector('#mod_quiz_preflight_form,.quizsecuremoderequired,input[name="_qf__mod_quiz_preflight_check_form"]')),
+            secureRequired: Boolean(document.querySelector('.quizsecuremoderequired')),
+            preflightForm: preflight ? {
+              action: new URL(preflight.getAttribute('action') || '', base).href, method: preflight.method,
+              controls: [...preflight.querySelectorAll('input,select,textarea,button')].map(input => ({ name: input.name, type: input.type, disabled: input.disabled })),
+              fields: [...preflight.querySelectorAll('input,button')].filter(input => input.type === 'hidden' || (input.type === 'submit' && input.name === 'submitbutton'))
+                .map(input => [input.name, input.value]),
+            } : null,
           } : null,
           pageUrls: [...new Set(pageUrls)], expectedSlots,
         };

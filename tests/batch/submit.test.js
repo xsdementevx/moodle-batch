@@ -107,6 +107,48 @@ test('native start is explicit, reuses active attempt and blocks preflight and r
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+test('native time confirmation sends once and rejects additional requirements or changed scope', async () => {
+  const parser = await openParser();
+  const dir = await mkdtemp(join(tmpdir(), 'batch-preflight-'));
+  const entry = '<form method="post" action="/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"></form>';
+  const confirmation = '<form id="mod_quiz_preflight_form" method="post" action="/mod/quiz/startattempt.php"><input type="hidden" name="cmid" value="20"><input type="hidden" name="sesskey" value="synthetic"><input type="hidden" name="_qf__mod_quiz_preflight_check_form" value="1"><input type="submit" name="submitbutton" value="Start"><input type="submit" name="cancel" value="Cancel"></form>';
+  const parse = extra => parser.parse('<body id="page-mod-quiz-view" data-course-id="10" data-quiz-id="20" data-user-scope="u1">' + entry + extra + '</body>', 'https://moodle.example/mod/quiz/view.php?id=20');
+  try {
+    const view = await parse(confirmation);
+    const plan = buildStart(view);
+    assert.deepEqual(plan.fields, { cmid: '20', sesskey: 'synthetic', _qf__mod_quiz_preflight_check_form: '1', submitbutton: 'Start' });
+    let posts = 0;
+    const moodle = { postStart: async sent => {
+      posts++; assert.deepEqual(sent, plan);
+      return { attemptUrl: 'https://moodle.example/mod/quiz/attempt.php?attempt=30&cmid=20' };
+    } };
+    const journal = join(dir, 'start.json');
+    await startTest(moodle, view, journal);
+    await startTest(moodle, view, journal);
+    assert.equal(posts, 1);
+    const invalid = [
+      confirmation.replace('</form>', '<input type="password" name="quizpassword"></form>'),
+      confirmation.replace('</form>', '<input type="checkbox" name="agreement" required></form>'),
+      confirmation.replace('</form>', '<textarea name="explanation"></textarea></form>'),
+      confirmation.replace('value="20"', 'value="21"'),
+      confirmation.replace('value="synthetic"', 'value="different"'),
+      confirmation.replace('value="1"', 'value="0"'),
+      confirmation.replace('method="post"', 'method="get"'),
+      confirmation.replace('action="/mod/quiz/startattempt.php"', 'action="https://other.example/mod/quiz/startattempt.php"'),
+      confirmation.replace('</form>', '<input type="hidden" name="cmid" value="20"></form>'),
+      confirmation.replace('</form>', '<input type="hidden" name="forcenew" value="1"></form>'),
+      confirmation.replace('name="submitbutton"', 'name="otherbutton"'),
+      confirmation.replace('name="submitbutton"', 'disabled name="submitbutton"'),
+      confirmation + confirmation,
+      confirmation + '<div class="quizsecuremoderequired">Secure browser required</div>',
+    ];
+    for (const html of invalid) {
+      const blocked = await parse(html);
+      assert.throws(() => buildStart(blocked), /MOODLE_PREFLIGHT_REQUIRED/);
+    }
+  } finally { await parser.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('one final request maps stable answers to native fields and rejects unresolved, excluded or foreign data', () => {
   const attempt = fixture();
   const plan = buildSubmission(attempt, attempt.questions);
