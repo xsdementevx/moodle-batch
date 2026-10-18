@@ -34,6 +34,36 @@ async function fixture({ snapshot = false, uncertain = false, reasoning = 'Mediu
 }
 const verified = async answers => answers.map(a => a.status === 'candidate' && a.evidenceVerified ? { ...a, semanticVerified: true } : a);
 
+test('a verified malformed final becomes a retained failure, never an answer or a new dispatch', async () => {
+  const f = await fixture();
+  try {
+    const broken = '{"answers":[{"sourceUrls":["https://example.test/' + '%20'.repeat(1200);
+    f.messages.at(-1).text = broken;
+    const result = await recoverWeb(f.path, { readMessages: async () => f.messages, verifySemantics: async answers => {
+      assert.ok(answers.every(a => a.status === 'needs_review' && a.answer === null && !a.evidenceVerified));
+      return answers;
+    } });
+    assert.equal(result.responseFailure.code, 'INVALID_WEB_JSON');
+    assert.equal(result.responseFailure.text, broken);
+    assert.deepEqual(result.continuation, { requestId: id, parentRequestId: [] });
+    const saved = JSON.parse(await readFile(f.path));
+    assert.equal(saved.state, 'complete');
+    assert.ok(saved.result.answers.every(a => a.reviewReason === 'model_response_invalid'));
+    assert.deepEqual(await recoverWeb(f.path, { readMessages: () => assert.fail('do not read or resend again') }), result);
+  } finally { await rm(f.dir, { recursive: true, force: true }); }
+  for (const change of [
+    messages => { messages.at(-1).endTurn = false; },
+    messages => { messages[0].text = messages[0].text.replaceAll(id, digest('foreign')); },
+  ]) {
+    const other = await fixture();
+    try {
+      other.messages.at(-1).text = '{broken'; change(other.messages);
+      await assert.rejects(recoverWeb(other.path, { readMessages: async () => other.messages }), /RESPONSE_NOT_READY|FOREIGN_CONVERSATION|RECOVERY_SCOPE_MISMATCH/);
+      assert.equal(JSON.parse(await readFile(other.path)).state, 'pending');
+    } finally { await rm(other.dir, { recursive: true, force: true }); }
+  }
+});
+
 test('draft integrity accepts paragraph spacing while preserving every JSON value and instruction', () => {
   const prompt = webPrompt(qs, context, id);
   assert.equal(sameWebPrompt(prompt.replaceAll('\n', '\n\n'), prompt), true);
@@ -211,10 +241,10 @@ test('stored prompts recover through Web identity links and punctuation escaping
     const f = await fixture();
     try {
       const parent = digest('completed parent');
-      const prompt = f.messages[0].text.replace('Which category?', 'Which category at https://example.test/a_b_(c)?');
+      const prompt = f.messages[0].text.replace('Which category?', 'Which category \\"named\\" at https://example.test/a_b_(c)?');
       f.saved.request = { prompt, parentRequestId: [parent], reasoning: 'High' };
       const actual = prompt.replaceAll('https://example.test/a_b_(c)', '[https://example.test/a_b_(c)](https://example.test/a_b_(c))')
-        .replace(/[:_()]/gu, char => '\\' + char);
+        .replace(/[:_()]/gu, char => '\\' + char).replace(/\\"/gu, '\\\\"');
       let changed = actual;
       if (corrupt === 'question') changed = changed.replace('Which category', 'Which other category');
       if (corrupt === 'quote') changed = changed.replace('explicitly identifies Alpha', 'never identifies Alpha');

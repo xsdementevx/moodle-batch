@@ -41,6 +41,7 @@ export function webPrompt(questions, context, requestId) {
     + `confidence от 0 до 1 — оценка уверенности после проверки. Если уверенность ниже ${MIN_WEB_CONFIDENCE} или источник не подтверждает именно выбранный ответ, needsReview=true. `
     + 'Для каждого ответа добавь evidence: {"kind":"context","contextId":"ID материала","quote":"точная цитата"} '
     + 'или {"kind":"web","url":"точный URL из поиска","quote":"точная цитата со страницы"}. '
+    + 'Выводи компактный JSON. URL копируй целиком из реально открытого источника, максимум 2048 символов; не дописывай пробелы, %20 или повторяющиеся фрагменты. Если адрес повреждён или слишком длинный, используй другой источник либо needsReview=true и пустой sourceUrls. '
     + 'Если весь ответ требует нескольких цитат, evidence может быть массивом этих объектов. Для matching добавь каждому объекту rowIds: массив ID строк, которые подтверждает цитата; вместе покрой все строки. Для multiple добавь optionIds: массив выбранных ID, которые подтверждает цитата; вместе покрой весь выбранный набор. Каждая цитата должна быть точной и проверяемой. '
     + 'Цитата минимум 20 символов, без многоточий и пересказа, должна обосновывать выбранный ответ. Для multiple обоснуй весь набор. '
     + 'Заголовок или вводная фраза «источники делятся на четыре группы» не доказывает сами группы: цитируй перечисление с названиями выбранных вариантов. '
@@ -449,7 +450,8 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
         const actual = users.at(-1)?.text;
         // The Web editor escapes punctuation and expands bare URLs into identity
         // links. Accept only a full match to the original, never repaired JSON.
-        const plain = actual?.replace(/\\([:_()])/gu, '$1').replace(/\[(https:\/\/[^\s[\]]+)\]\(\1\)/gu, '$1');
+        const plain = actual?.replace(/\\([:_()])/gu, '$1').replace(/\[(https:\/\/[^\s[\]]+)\]\(\1\)/gu, '$1')
+          .replace(/\\\\(?=")/gu, '\\');
         if ((!sameWebPrompt(actual, saved.request.prompt) && !sameWebPrompt(plain, saved.request.prompt))
             || users.length !== parents.length + 1 || parents.some((id, i) => !users[i].text?.includes(id))) reject();
       }
@@ -487,7 +489,18 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
   const context = packet.contexts ? { documents: Object.fromEntries(Object.entries(packet.contexts).map(([id, text]) => [id, { text }])) }
     : { text: packet.context };
   if (currentQuestions && currentContext && currentQuestions.some(q => !recoveredScopeMatches({ recoveryQuestions: packet.questions, answers: [] }, q, currentContext))) reject();
-  const parsed = messages ? parseConversation(messages, questions, saved.requestId, parents) : saved.response.answers;
+  let parsed, responseFailure;
+  try { parsed = messages ? parseConversation(messages, questions, saved.requestId, parents) : saved.response.answers; }
+  catch (error) {
+    // A scope-validated final response with broken JSON is a known failure,
+    // not an unknown dispatch. Retain it and clarify in the original chain.
+    // Missing finals, foreign turns and changed prompts still keep the lock.
+    if (!['INVALID_WEB_JSON', 'INCOMPLETE_WEB_RESPONSE', 'INVALID_WEB_RESPONSE'].includes(error.message)) throw error;
+    responseFailure = { code: error.message, text: messages.findLast(m => m.role === 'assistant' && m.endTurn)?.text };
+    parsed = questions.map(q => ({ slot: q.slot, provider: 'gpt_web', answer: null, status: 'needs_review',
+      reviewReason: 'model_response_invalid', reviewExplanation: 'Предыдущий ответ не прошёл проверку JSON или состава вопросов. Верни полный компактный JSON для перечисленных вопросов; не продолжай повреждённый текст. Не дописывай повторяющиеся %20 в URL. Если источник не подтверждён, оставь вопрос нерешённым.',
+      evidenceVerified: false, semanticVerified: false }));
+  }
   if (!Array.isArray(parsed) || parsed.length !== slots.length || new Set(parsed.map(a => a.slot)).size !== slots.length
       || parsed.some(a => !slots.includes(a.slot))) reject();
   // A changed proof payload must never bypass an older unknown Jev outcome.
@@ -496,7 +509,8 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
     if (pending.state === 'pending' && (!pending.questionIds || pending.questionIds.some(id => slots.includes(id)))) throw new Error('UNKNOWN_MODEL_OUTCOME');
   }
   let answers;
-  if (saved.evidence) answers = saved.evidence;
+  if (responseFailure) answers = parsed;
+  else if (saved.evidence) answers = saved.evidence;
   else {
     const parser = await openParser();
     try { answers = await verifyEvidence(parsed, questions, context, { textFromHtml: html => parser.sourceText(html) }); }
@@ -506,6 +520,7 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
       || answers.some(a => !slots.includes(a.slot))) reject();
   answers = await verifySemantics(answers, questions, journalPath);
   const result = { answers, conversationUrl: saved.conversationUrl, reasoning: saved.request?.reasoning || ['Instant', 'Medium', 'High'][parents.length],
+    ...(responseFailure ? { responseFailure } : {}),
     sourcePolicy: 9, recovered: true, recoveryQuestions: packet.questions,
     continuation: { requestId: saved.requestId, parentRequestId: parents } };
   if (await readFile(journalPath, 'utf8') !== original) throw new Error('GPT_WEB_RECOVERY_JOURNAL_CHANGED');
