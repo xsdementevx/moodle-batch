@@ -68,6 +68,11 @@ export function webPrompt(questions, context, requestId) {
         ...(Object.hasOwn(q, 'previousUnverifiedAnswer') ? { previousUnverifiedAnswer: q.previousUnverifiedAnswer } : {}) })) });
 }
 
+// The rich-text editor renders paragraph boundaries as two newlines. JSON
+// string values contain escaped newlines, so their data must still match exactly.
+export const sameWebPrompt = (actual, expected) => typeof actual === 'string'
+  && actual.replace(/\n+/gu, '\n') === expected.replace(/\n+/gu, '\n');
+
 export function parseWeb(text, questions, requestId, citations) {
   const cleaned = text.trim().replace(/^<(escape|CodeBlock)\b[^>]*>([\s\S]*)<\/\1>$/u, '$2').trim()
     .replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
@@ -367,7 +372,7 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
   else await page.keyboard.press('Escape');
   const prompt = webPrompt(questions, context, requestId);
   await composer.fill(prompt);
-  if (await composer.innerText() !== prompt) throw new Error('GPT_WEB_DRAFT_MISMATCH');
+  if (!sameWebPrompt(await composer.innerText(), prompt)) throw new Error('GPT_WEB_DRAFT_MISMATCH');
   if (conversationUrl && page.url() !== conversationUrl) throw new Error('GPT_WEB_SCOPE_MISMATCH');
   const send = page.locator('button[data-testid="send-button"],button[aria-label="Отправить"],button[aria-label="Send"]').first();
   try { await send.waitFor({ state: 'visible', timeout: 5000 }); }
@@ -431,7 +436,7 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
         // The Web editor escapes punctuation and expands bare URLs into identity
         // links. Accept only a full match to the original, never repaired JSON.
         const plain = actual?.replace(/\\([:_()])/gu, '$1').replace(/\[(https:\/\/[^\s[\]]+)\]\(\1\)/gu, '$1');
-        if ((actual !== saved.request.prompt && plain !== saved.request.prompt)
+        if ((!sameWebPrompt(actual, saved.request.prompt) && !sameWebPrompt(plain, saved.request.prompt))
             || users.length !== parents.length + 1 || parents.some((id, i) => !users[i].text?.includes(id))) reject();
       }
     } else {

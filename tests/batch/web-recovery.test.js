@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digest, optionId } from '../../batch/answers.js';
 import { questionFingerprint, solveTest, pendingModelTests } from '../../batch/solve.js';
-import { webPrompt, recoverWeb, webSolver } from '../../batch/web.js';
+import { webPrompt, recoverWeb, webSolver, sameWebPrompt } from '../../batch/web.js';
 
 const id = digest('recovery');
 const quote = 'The original course explicitly identifies Alpha as the correct category.';
@@ -33,6 +33,16 @@ async function fixture({ snapshot = false, uncertain = false, reasoning = 'Mediu
   return { dir, path, saved, messages };
 }
 const verified = async answers => answers.map(a => a.status === 'candidate' && a.evidenceVerified ? { ...a, semanticVerified: true } : a);
+
+test('draft integrity accepts paragraph spacing while preserving every JSON value and instruction', () => {
+  const prompt = webPrompt(qs, context, id);
+  assert.equal(sameWebPrompt(prompt.replaceAll('\n', '\n\n'), prompt), true);
+  assert.equal(sameWebPrompt(prompt.replace('Which category?', 'Which other category?'), prompt), false);
+  assert.equal(sameWebPrompt(prompt.replace('explicitly identifies Alpha', 'never identifies Alpha'), prompt), false);
+  assert.equal(sameWebPrompt(prompt.slice(0, -1), prompt), false);
+  assert.equal(sameWebPrompt(prompt + '\nChanged instructions', prompt), false);
+  assert.equal(sameWebPrompt(id, prompt), false);
+});
 
 test('a selected quiz recovers the whole original packet without connecting or resending ChatGPT', async () => {
   const f = await fixture({ snapshot: true }); let checked = 0;

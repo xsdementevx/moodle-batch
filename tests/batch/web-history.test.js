@@ -22,6 +22,22 @@ test('arming before click waits for a delayed POST and then for its stream; miss
   page.emit('close');
 });
 
+test('a long original generation survives five minutes but still has a bounded wait', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const page = new EventEmitter(); page.url = () => target; page.waitForRequest = async () => null;
+  observeWebHistory(page);
+  const request = { url: () => 'https://chatgpt.com/backend-api/f/conversation', method: () => 'POST', headers: () => ({}) };
+  page.emit('request', request);
+  let done = false;
+  const pending = waitForWebGeneration(page).then(() => { done = true; });
+  t.mock.timers.tick(360000); await Promise.resolve(); assert.equal(done, false);
+  page.emit('requestfinished', request); await pending; assert.equal(done, true);
+  page.emit('request', request);
+  const timeout = assert.rejects(waitForWebGeneration(page), /GPT_WEB_GENERATION_TIMEOUT/);
+  t.mock.timers.tick(1800000); await timeout;
+  page.emit('close');
+});
+
 test('an incomplete native history cannot trigger an immediate reserve read of the same conversation', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: 100000 });
   const page = new EventEmitter(); observeWebHistory(page);

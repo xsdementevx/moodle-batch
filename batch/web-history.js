@@ -164,7 +164,9 @@ export async function waitForWebGeneration(page) {
   let timer;
   try {
     const result = await Promise.race([state.generation.promise, new Promise(resolve => {
-      timer = setTimeout(() => resolve({ error: 'GPT_WEB_GENERATION_TIMEOUT' }), 300000);
+      // Large High packets can keep generating beyond five minutes. Keep the
+      // original stream open instead of leaving a successful late reply unknown.
+      timer = setTimeout(() => resolve({ error: 'GPT_WEB_GENERATION_TIMEOUT' }), 1800000);
     })]);
     const interrupted = result.error === 'GPT_WEB_GENERATION_INTERRUPTED';
     if (result.error && !interrupted) throw Object.assign(new Error(result.error), result);
