@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { verifySemantics } from '../../batch/semantic.js';
+import { verifySemantics, SEMANTIC_PROOF_POLICY } from '../../batch/semantic.js';
 import { pendingModelTests, solveTest } from '../../batch/solve.js';
 import { webSolver } from '../../batch/web.js';
 
@@ -61,7 +61,7 @@ test('completed short answers can update the proof contract without resending Ch
     for (let i = 0; i < 2; i++) {
       const [result] = await web([question], { text: quote }, { journalPath });
       assert.equal(result.status, 'candidate'); assert.equal(result.semanticVerified, true);
-      assert.equal(result.semanticPolicy, 4);
+      assert.equal(result.semanticPolicy, SEMANTIC_PROOF_POLICY);
     }
     assert.equal(checks, 1);
   } finally { await web.close(); await rm(dir, { recursive: true, force: true }); }
@@ -78,6 +78,7 @@ test('a cached choice applies sourced rules to unchanged problem data without an
   const web = webSolver({ extension: true, connect: () => assert.fail('no browser or ChatGPT request'),
     verifySemantics: (answers, questions, path) => verifySemantics(answers, questions, path, { judge: async ({ payload }) => {
       checks++;
+      assert.equal(payload.model, 'jev-1.14.0', 'proof checker is pinned separately from the initial solver');
       const spec = payload.questions.c0.instructions;
       assert.equal(spec.question, question.text); assert.equal(spec.option, '20');
       assert.deepEqual(spec.alternatives, ['20', '10']); assert.deepEqual(spec.quotes, [proposed.evidence.quote]);

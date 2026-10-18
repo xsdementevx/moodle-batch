@@ -1,7 +1,7 @@
 import { checkpointed, requestJev } from './solve.js';
 import { digest } from './answers.js';
 
-export const SEMANTIC_PROOF_POLICY = 4;
+export const SEMANTIC_PROOF_POLICY = 5;
 
 // A separate request sees the question and quotes, never the solver's confidence or verdict.
 export async function verifySemantics(answers, questions, journalPath, { judge = requestJev } = {}) {
@@ -35,7 +35,7 @@ export async function verifySemantics(answers, questions, journalPath, { judge =
         label: [claim.row, claim.option].filter(Boolean).join(' → ').slice(0, 120) });
     }
   }
-  const payloadFor = entries => ({ model: 'jev-1.13.0', state: 'Independent assessment of quotation entailment.', questions: Object.fromEntries(entries) });
+  const payloadFor = entries => ({ model: 'jev-1.14.0', state: 'Independent assessment of quotation entailment.', questions: Object.fromEntries(entries) });
   const packets = [], oversized = new Set(); let packet = [];
   for (const entry of Object.entries(specs)) {
     if (JSON.stringify(payloadFor([entry])).length > 48000) { oversized.add(entry[0]); continue; }
