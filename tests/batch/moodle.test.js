@@ -7,6 +7,24 @@ const source = 'https://moodle.example/mod/quiz/review.php?attempt=30&cmid=20';
 const html = (content, kind = 'review') => `<!doctype html><body id="page-mod-quiz-${kind}" data-course-id="10" data-quiz-id="20" data-user-scope="u1">${content}</body>`;
 const choice = (state = 'incorrect') => `<div class="que multichoice ${state}" id="question-100-1"><div class="formulation"><div class="qtext">Choose<br>a sample.</div><div class="answer"><div class="r0"><input type="radio" name="q100:1_answer" id="a" value="0" checked disabled aria-labelledby="label-a"><div id="label-a"><span class="answernumber">a.</span>Alpha</div></div><div class="r1"><input type="radio" name="q100:1_answer" id="b" value="1" disabled><label for="b"><span class="answernumber">b.</span>Beta</label></div></div><input name="q100:1_:sequencecheck" value="2"></div><input type="checkbox" name="q100:1_:flagged" checked><div class="rightanswer">Правильный ответ: Beta</div></div>`;
 
+test('resource wrappers resolve one native file and never become lecture text', async () => {
+  const parser = await openParser();
+  const resource = 'https://moodle.example/mod/resource/view.php?id=12';
+  const file = '/pluginfile.php/44/mod_resource/content/1/lecture.pdf';
+  const wrapper = content => `<body id="page-mod-resource-view"><nav><a href="/pluginfile.php/99/mod_resource/content/1/other.pdf">Other</a></nav><main id="region-main">${content}</main></body>`;
+  try {
+    assert.equal(await parser.resourceFile(wrapper(`<a href="${file}">Download</a><object data="${file}"></object>`), resource), 'https://moodle.example' + file);
+    for (const content of [
+      `<a href="https://other.example${file}">Foreign</a>`,
+      '<a href="/pluginfile.php/44/user/private/1/file.pdf">Unrelated file</a>',
+      `<a href="${file}">One</a><a href="${file.replace('lecture', 'other')}">Two</a>`,
+      '<p>No file</p>',
+    ]) await assert.rejects(parser.resourceFile(wrapper(content), resource), /MATERIAL_FILE_UNAVAILABLE/);
+    await assert.rejects(parser.resourceFile(wrapper(`<a href="${file}">File</a>`).replace('page-mod-resource-view', 'page-mod-page-view'), resource), /MATERIAL_FILE_UNAVAILABLE/);
+    await assert.rejects(parser.resourceFile('<form id="login"></form>', resource), /LOGIN_REQUIRED/);
+  } finally { await parser.close(); }
+});
+
 test('native bank identity is read only from flag data matching the question usage and slot', async () => {
   const parser = await openParser();
   try {

@@ -99,6 +99,24 @@ export async function openParser() {
       if (result.length > 6) throw new Error('MATERIAL_LIMIT');
       return result;
     },
+    async resourceFile(html, sourceUrl) {
+      const result = await page.evaluate(({ html, sourceUrl }) => {
+        const document = new DOMParser().parseFromString(html, 'text/html');
+        if (document.querySelector('#login,form[action*="/login/"]')) return { error: 'LOGIN_REQUIRED' };
+        const source = new URL(sourceUrl);
+        const main = document.querySelector('#region-main');
+        if (document.body.id !== 'page-mod-resource-view' || !main) return { error: 'MATERIAL_FILE_UNAVAILABLE' };
+        const files = [...main.querySelectorAll('a[href],object[data],iframe[src],embed[src]')].map(node => {
+          try { return new URL(node.getAttribute('href') || node.getAttribute('data') || node.getAttribute('src'), source); }
+          catch { return null; }
+        }).filter(url => url && url.origin === source.origin && !url.username && !url.password
+          && /^\/pluginfile\.php\/\d+\/mod_resource\/content\/\d+\//u.test(url.pathname));
+        const unique = [...new Set(files.map(url => url.href))];
+        return unique.length === 1 ? { url: unique[0] } : { error: 'MATERIAL_FILE_UNAVAILABLE' };
+      }, { html, sourceUrl });
+      if (result.error) throw new Error(result.error);
+      return result.url;
+    },
     async materialText(html) {
       return page.evaluate(html => {
         const document = new DOMParser().parseFromString(html, 'text/html');
@@ -464,6 +482,10 @@ export async function openMoodle({ authFile, origin, cookies, persist = true }) 
           const buffer = await response.body();
           if (buffer.length > 10 * 1024 * 1024) throw new Error('MATERIAL_TOO_LARGE');
           const mime = response.headers()['content-type'] || '';
+          if (mime.includes('text/html') && url.pathname === '/mod/resource/view.php') {
+            url = new URL(await parser.resourceFile(buffer.toString('utf8'), url.href));
+            continue;
+          }
           const htmlText = mime.includes('text/html') ? await parser.materialText(buffer.toString('utf8')) : null;
           return { ...ref, buffer, mime, htmlText };
         } finally { await response.dispose(); }
