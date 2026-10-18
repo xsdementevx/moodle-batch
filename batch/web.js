@@ -76,8 +76,12 @@ export const sameWebPrompt = (actual, expected) => typeof actual === 'string'
 // Read the editor's paragraphs directly: innerText inserts visual line breaks
 // around auto-linked URLs, including URLs inside JSON strings.
 export function webDraftText(editor) {
+  const plain = editor.innerText;
+  editor = editor.cloneNode(true);
+  for (const pill of editor.querySelectorAll('[data-inline-selection-pill][data-system-hint-type="search"][data-prompt-link-href="chatgpt-system-hint://search"][contenteditable="false"]')) pill.remove();
   const paragraphs = [...editor.childNodes];
-  if (!paragraphs.length || paragraphs.some(p => p.nodeName !== 'P')) return editor.innerText ?? null;
+  if (!paragraphs.length || paragraphs.some(p => p.nodeName !== 'P')) return plain;
+  for (const p of paragraphs) if (p.lastChild?.matches?.('br.ProseMirror-trailingBreak')) p.lastChild.remove();
   if (paragraphs.some(p => p.querySelector('br'))) return null;
   return paragraphs.map(p => p.textContent).join('\n');
 }
@@ -362,11 +366,12 @@ export async function dispatchWeb(page, questions, context, { requestId, journal
     for (let i = 0; i < parents.length; i++) if (!(await users.nth(i).innerText()).includes(parents[i])) throw new Error('GPT_WEB_FOREIGN_CONVERSATION');
   }
   // Hydration can briefly restore stale editor text before loading the empty draft.
-  try { await page.waitForFunction(() => {
+  try { if ((await composer.evaluate(webDraftText))?.trim()) await page.waitForFunction(() => {
     const editor = document.querySelector('#prompt-textarea,[role="textbox"][contenteditable="true"]');
     return editor && !editor.innerText.trim();
   }, undefined, { timeout: 3000 }); } catch { /* retain a real draft and reject below */ }
-  if ((await composer.innerText()).trim()) throw new Error('GPT_WEB_FOREIGN_DRAFT');
+  const existingDraft = await composer.evaluate(webDraftText);
+  if (existingDraft === null || existingDraft.trim()) throw new Error('GPT_WEB_FOREIGN_DRAFT');
   const effort = reasoning === 'current' ? 'current' : await selectWebReasoning(page, reasoning);
   const tools = page.locator('button[data-composer-navigation-target="add-context"],button[data-testid="composer-plus-btn"],button[aria-label="Добавить файлы и другое"],button[aria-label="Add files and more"]').first();
   try { await tools.waitFor({ state: 'visible', timeout: 15000 }); }

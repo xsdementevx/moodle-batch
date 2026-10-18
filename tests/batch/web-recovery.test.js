@@ -44,16 +44,31 @@ test('draft integrity accepts paragraph spacing while preserving every JSON valu
   assert.equal(sameWebPrompt(id, prompt), false);
 });
 
-test('editor paragraphs preserve JSON exactly without visual URL line breaks', () => {
-  const prompt = webPrompt(qs, context, id);
-  const paragraph = textContent => ({ nodeName: 'P', textContent, querySelector: () => null });
-  const editor = { childNodes: prompt.split('\n').map(paragraph) };
-  assert.equal(webDraftText(editor), prompt);
-  editor.childNodes.at(-1).textContent = editor.childNodes.at(-1).textContent.replace('Which category?', 'Which other category?');
-  assert.notEqual(webDraftText(editor), prompt);
-  editor.childNodes.at(-1).querySelector = () => ({});
-  assert.equal(webDraftText(editor), null, 'an unexpected real line break must not disappear');
-  assert.equal(webDraftText({ childNodes: [{ nodeName: 'DIV', textContent: prompt }] }), null);
+test('editor paragraphs preserve JSON while ignoring only native search pills and trailing placeholders', async () => {
+  const { chromium } = await import('playwright');
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const prompt = webPrompt(qs, context, id);
+    await page.setContent('<div id="editor"></div>');
+    const editor = page.locator('#editor');
+    await editor.evaluate((el, text) => {
+      for (const line of text.split('\n')) { const p = document.createElement('p'); p.textContent = line; el.append(p); }
+    }, prompt);
+    assert.equal(await editor.evaluate(webDraftText), prompt);
+    await editor.evaluate(el => { el.lastChild.textContent = el.lastChild.textContent.replace('Which category?', 'Which other category?'); });
+    assert.notEqual(await editor.evaluate(webDraftText), prompt);
+    await editor.evaluate(el => el.lastChild.append(document.createElement('br')));
+    assert.equal(await editor.evaluate(webDraftText), null);
+    const pill = '<span data-inline-selection-pill data-system-hint-type="search" data-prompt-link-href="chatgpt-system-hint://search" contenteditable="false">Поиск в сети</span>';
+    await editor.evaluate((el, pill) => { el.innerHTML = '<p>' + pill + '<img class="ProseMirror-separator"><br class="ProseMirror-trailingBreak"></p>'; }, pill);
+    assert.equal(await editor.evaluate(webDraftText), '');
+    assert.match(await editor.innerText(), /Поиск в сети/, 'live DOM is unchanged');
+    await editor.evaluate(el => el.firstChild.insertBefore(document.createTextNode('Personal draft'), el.firstChild.lastChild));
+    assert.equal(await editor.evaluate(webDraftText), 'Personal draft');
+    await editor.evaluate(el => el.querySelector('span').dataset.systemHintType = 'other');
+    assert.match(await editor.evaluate(webDraftText), /Поиск в сети/, 'unknown pills must not be stripped');
+  } finally { await browser.close(); }
 });
 
 test('normally completed uncertainty resumes only missing reasoning and retains a completed uncertain High', async () => {
