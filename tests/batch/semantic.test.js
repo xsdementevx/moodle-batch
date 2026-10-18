@@ -61,8 +61,36 @@ test('completed short answers can update the proof contract without resending Ch
     for (let i = 0; i < 2; i++) {
       const [result] = await web([question], { text: quote }, { journalPath });
       assert.equal(result.status, 'candidate'); assert.equal(result.semanticVerified, true);
-      assert.equal(result.semanticPolicy, 3);
+      assert.equal(result.semanticPolicy, 4);
     }
+    assert.equal(checks, 1);
+  } finally { await web.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test('a cached choice applies sourced rules to unchanged problem data without another ChatGPT request', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-application-'));
+  const question = { ...q, type: 'choice', text: 'A fee is 10 per item. What is the fee for two items?',
+    options: [{ id: 'a', text: '20' }, { id: 'b', text: '10' }] };
+  const proposed = { slot: '1', answer: ['a'], provider: 'gpt_web', confidence: 0.99, status: 'needs_review',
+    evidenceVerified: false, semanticVerified: false, semanticPolicy: 3, reviewReason: 'evidence_not_supportive',
+    evidence: { kind: 'context', quote: 'The total fee is the per-item fee multiplied by the number of items.' } };
+  let checks = 0;
+  const web = webSolver({ extension: true, connect: () => assert.fail('no browser or ChatGPT request'),
+    verifySemantics: (answers, questions, path) => verifySemantics(answers, questions, path, { judge: async ({ payload }) => {
+      checks++;
+      const spec = payload.questions.c0.instructions;
+      assert.equal(spec.question, question.text); assert.equal(spec.option, '20');
+      assert.deepEqual(spec.alternatives, ['20', '10']); assert.deepEqual(spec.quotes, [proposed.evidence.quote]);
+      assert.match(spec.rule, /question and alternatives as the problem data/);
+      assert.match(spec.rule, /source need not contain that exact example/);
+      assert.match(spec.rule, /Do not introduce unstated factual premises/);
+      assert.equal(spec.reason, undefined, 'do not trust a solver explanation');
+      return reply(payload, ['supported']);
+    } }) });
+  try {
+    const journalPath = join(dir, 'saved.json');
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [proposed] } }));
+    for (let i = 0; i < 2; i++) assert.equal((await web([question], {}, { journalPath }))[0].semanticVerified, true);
     assert.equal(checks, 1);
   } finally { await web.close(); await rm(dir, { recursive: true, force: true }); }
 });

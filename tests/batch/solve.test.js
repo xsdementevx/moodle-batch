@@ -9,6 +9,7 @@ import { normalizeShortAnswerForQuestion } from '../../batch/text.js';
 import { checkpointed, jevPacket, parseJev, questionFingerprint, questionPackets, selectContext, solveTest } from '../../batch/solve.js';
 import { parseWeb, parseConversation, webPrompt, readyWeb, openWebPage, selectWebReasoning, dispatchWeb, readWebResult, verifyWebParents, webSolver } from '../../batch/web.js';
 import { verifyEvidence } from '../../batch/evidence.js';
+import { SEMANTIC_PROOF_POLICY } from '../../batch/semantic.js';
 import { contextStats } from '../../batch/context.js';
 
 test('context telemetry reports transmitted text size, readable materials and extraction cache hits', () => {
@@ -202,7 +203,7 @@ test('a completed multiple proof is upgraded once without resending ChatGPT or r
   const solve = webSolver({ extension: true, connect: () => assert.fail('do not resend to ChatGPT'),
     verifySemantics: async answers => {
       checks++; assert.equal(answers[0].status, 'candidate'); assert.equal(answers[0].evidenceVerified, true);
-      return answers.map(a => ({ ...a, status: 'needs_review', evidenceVerified: false, semanticVerified: false, semanticPolicy: 3 }));
+      return answers.map(a => ({ ...a, status: 'needs_review', evidenceVerified: false, semanticVerified: false, semanticPolicy: SEMANTIC_PROOF_POLICY }));
     } });
   try {
     await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [answer] } }));
