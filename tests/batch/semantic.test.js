@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifySemantics } from '../../batch/semantic.js';
 import { pendingModelTests, solveTest } from '../../batch/solve.js';
+import { webSolver } from '../../batch/web.js';
 
 const quote = 'Only Alpha is included; Beta is explicitly excluded.';
 const q = { slot: '1', type: 'multiple', text: 'Which options belong?', options: [{ id: 'a', text: 'Alpha' }, { id: 'b', text: 'Beta' }] };
@@ -13,6 +14,58 @@ const answer = { slot: '1', status: 'candidate', evidenceVerified: true, answer:
 const reply = (payload, choices = ['supported', 'refuted']) => ({ model: payload.model,
   answers: Object.fromEntries(Object.keys(payload.questions).map((id, i) => [id, { type: 'choice', choice: choices[i], confidence: 0.99,
     probabilities: { supported: +(choices[i] === 'supported'), refuted: +(choices[i] === 'refuted'), insufficient_context: +(choices[i] === 'insufficient_context') } }])) });
+
+test('short answer proof identifies completion format without changing question, fragment or quotes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-completion-'));
+  const cases = [
+    { text: 'Таблица с временным набором данных является результатом выполнения', fragment: 'запроса' },
+    { text: 'Условия логического ИЛИ записаны в ... строках.', fragment: 'разных' },
+  ];
+  try {
+    for (const [i, item] of cases.entries()) {
+      const question = { ...q, type: 'text', textFormat: 'shortanswer', text: item.text };
+      const proposed = { ...answer, answer: item.fragment, evidence: { quote } };
+      const [result] = await verifySemantics([proposed], [question], join(dir, String(i)), { judge: async ({ payload }) => {
+        const spec = payload.questions.c0.instructions;
+        assert.equal(spec.taskType, 'text'); assert.equal(spec.answerFormat, 'shortanswer');
+        assert.equal(spec.question, item.text); assert.equal(spec.option, item.fragment);
+        assert.deepEqual(spec.quotes, [quote]);
+        assert.match(spec.completionRule, /filling that blank or completing the stem/);
+        assert.match(spec.completionRule, /do not add premises/);
+        return reply(payload, ['insufficient_context']);
+      } });
+      assert.equal(result.semanticVerified, false, 'completion instructions never override an uncertain verdict');
+      assert.equal(result.status, 'needs_review');
+    }
+    await verifySemantics([answer], [q], join(dir, 'multiple'), { judge: async ({ payload }) => {
+      assert.equal(payload.questions.c0.instructions.completionRule, undefined);
+      return reply(payload);
+    } });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('completed short answers can update the proof contract without resending ChatGPT', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-upgrade-'));
+  const question = { ...q, type: 'text', textFormat: 'shortanswer', options: [], rows: [] };
+  const proposed = { slot: q.slot, answer: 'Alpha', provider: 'gpt_web', confidence: 0.99,
+    status: 'needs_review', evidenceVerified: false, semanticVerified: false, semanticPolicy: 2,
+    reviewReason: 'evidence_not_supportive', evidence: { kind: 'context', quote } };
+  let checks = 0;
+  const web = webSolver({ extension: true, connect: () => assert.fail('no browser or ChatGPT send'),
+    verifySemantics: (answers, questions, path) => verifySemantics(answers, questions, path, { judge: async ({ payload }) => {
+      checks++; assert.equal(payload.questions.c0.instructions.taskType, 'text'); return reply(payload, ['supported']);
+    } }) });
+  try {
+    const journalPath = join(dir, 'saved.json');
+    await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [proposed] } }));
+    for (let i = 0; i < 2; i++) {
+      const [result] = await web([question], { text: quote }, { journalPath });
+      assert.equal(result.status, 'candidate'); assert.equal(result.semanticVerified, true);
+      assert.equal(result.semanticPolicy, 3);
+    }
+    assert.equal(checks, 1);
+  } finally { await web.close(); await rm(dir, { recursive: true, force: true }); }
+});
 
 test('independent checks hide prior verdicts, verify exclusion, checkpoint once and preserve uncertain answers', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'batch-semantic-')); let calls = 0;

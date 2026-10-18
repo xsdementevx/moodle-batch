@@ -202,7 +202,7 @@ test('a completed multiple proof is upgraded once without resending ChatGPT or r
   const solve = webSolver({ extension: true, connect: () => assert.fail('do not resend to ChatGPT'),
     verifySemantics: async answers => {
       checks++; assert.equal(answers[0].status, 'candidate'); assert.equal(answers[0].evidenceVerified, true);
-      return answers.map(a => ({ ...a, status: 'needs_review', evidenceVerified: false, semanticVerified: false, semanticPolicy: 2 }));
+      return answers.map(a => ({ ...a, status: 'needs_review', evidenceVerified: false, semanticVerified: false, semanticPolicy: 3 }));
     } });
   try {
     await writeFile(journalPath, JSON.stringify({ state: 'complete', result: { sourcePolicy: 9, answers: [answer] } }));

@@ -560,7 +560,7 @@ export function webSolver({ authFile, profileDir, visible = false, executablePat
         }
         cached.result.answers = cached.result.answers.map(answer => {
           const q = questions.find(q => q.slot === answer.slot);
-          const recheckProof = cached.result.sourcePolicy === 9 && q?.type === 'multiple' && answer.status === 'needs_review'
+          const recheckProof = cached.result.sourcePolicy === 9 && ['multiple', 'text'].includes(q?.type) && answer.status === 'needs_review'
             && answer.semanticVerified === false && answer.reviewReason === 'evidence_not_supportive' && answer.semanticPolicy !== SEMANTIC_PROOF_POLICY;
           return reviewEvidenceSupport(reviewConfidence(recheckProof ? { ...answer, status: 'candidate', evidenceVerified: true } : answer), q);
         });
