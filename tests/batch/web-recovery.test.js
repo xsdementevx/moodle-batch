@@ -16,7 +16,7 @@ const qs = ['20', '21'].map(quizId => ({ origin: 'https://moodle.example', userS
 const context = { documents: Object.fromEntries(qs.map(q => [q.quizId, { status: 'ready', contextHash: digest(q.quizId), text: quote }])) };
 const answers = qs.map(q => ({ slot: q.slot, answer: [option.id], confidence: 0.99, needsReview: false,
   evidence: { kind: 'context', contextId: q.quizId, quote }, sourceUrls: [] }));
-async function fixture({ snapshot = false, uncertain = false } = {}) {
+async function fixture({ snapshot = false, uncertain = false, reasoning = 'Medium' } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'batch-web-recovery-'));
   const path = join(dir, id + '.json');
   const prompt = webPrompt(qs, context, id);
@@ -26,7 +26,7 @@ async function fixture({ snapshot = false, uncertain = false } = {}) {
     bindings: qs.map(q => ({ slot: q.slot, fingerprint: questionFingerprint(q, context) })), conversationUrl: 'https://chatgpt.com/c/original' };
   if (snapshot) {
     const { parseConversation } = await import('../../batch/web.js');
-    saved.request = { prompt, parentRequestId: [], reasoning: 'Medium' };
+    saved.request = { prompt, parentRequestId: [], reasoning };
     saved.response = { answers: parseConversation(messages, qs, id), conversationUrl: saved.conversationUrl };
   }
   await writeFile(path, JSON.stringify(saved));
@@ -47,8 +47,8 @@ test('a selected quiz recovers the whole original packet without connecting or r
   } finally { await web.close(); await rm(f.dir, { recursive: true, force: true }); }
 });
 
-test('a recovered uncertain answer is retained across regrouping instead of another Instant request', async () => {
-  const f = await fixture({ snapshot: true, uncertain: true });
+test('a recovered High uncertain answer is retained across regrouping instead of another Instant request', async () => {
+  const f = await fixture({ snapshot: true, uncertain: true, reasoning: 'High' });
   const web = webSolver({ extension: true, connect: () => assert.fail('must not resend'), verifySemantics: verified });
   try {
     for (let n = 0; n < 2; n++) {
@@ -56,6 +56,38 @@ test('a recovered uncertain answer is retained across regrouping instead of anot
       assert.equal(result[0].decision.status, 'needs_review'); assert.equal(result[0].decision.reviewReason, 'model_uncertain');
     }
   } finally { await web.close(); await rm(f.dir, { recursive: true, force: true }); }
+});
+
+test('recovered Medium uncertainty resumes at High in the original chain and reuses that clarification', async () => {
+  const f = await fixture({ snapshot: true, uncertain: true });
+  const recovery = webSolver({ extension: true, connect: () => assert.fail('snapshot recovery must not open a browser'), verifySemantics: verified });
+  const calls = [], stages = [];
+  const { checkpointed } = await import('../../batch/solve.js');
+  const web = async (batch, material, opts) => {
+    calls.push(opts.reasoning);
+    assert.equal(opts.reasoning, 'high');
+    assert.equal(opts.continueUrl, f.saved.conversationUrl);
+    assert.deepEqual(opts.parentRequestId, [id]);
+    assert.equal(batch[0].previousUnverifiedAnswer, null);
+    assert.equal(batch[0].reviewReason, 'model_uncertain');
+    assert.equal(batch[0].previousReviewExplanation, 'Two alternatives remain ambiguous.');
+    const saved = await checkpointed(opts.journalPath, async () => ({ reasoning: 'High', conversationUrl: opts.continueUrl,
+      answers: [{ ...answers[0], provider: 'gpt_web', status: 'candidate', evidenceVerified: true, semanticVerified: true, reasoning: 'High' }] }),
+    opts.questionIds, opts.bindings);
+    return saved.answers;
+  };
+  web.recover = recovery.recover;
+  try {
+    const options = { journalDir: f.dir, web, jev: () => assert.fail('do not restart Jev'), progress: (stage, detail) => stages.push(detail) };
+    const [result] = await solveTest([qs[0]], context, options);
+    assert.equal(result.decision.status, 'candidate');
+    assert.deepEqual(calls, ['high']);
+    assert.equal(stages[0].reasoning, 'High');
+    const saved = JSON.parse(await readFile(f.path));
+    assert.deepEqual(saved.result.continuation, { requestId: id, parentRequestId: [] });
+    await solveTest([qs[0]], context, options);
+    assert.deepEqual(calls, ['high'], 'completed verified clarification survives regrouping');
+  } finally { await recovery.close(); await rm(f.dir, { recursive: true, force: true }); }
 });
 
 test('legacy recovery reads and validates the original full response', async () => {

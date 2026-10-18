@@ -14,6 +14,8 @@ export const reviewConfidence = answer => answer.status === 'candidate'
   && (!Number.isFinite(answer.confidence) || answer.confidence < MIN_WEB_CONFIDENCE || answer.confidence > 1)
   ? { ...answer, status: 'needs_review', evidenceVerified: false, reviewReason: 'model_uncertain' } : answer;
 const negativeQuestion = q => /(?:^|[^\p{L}])(?:не|кроме|неверн\p{L}*|исключая|за\s+исключением|not|except|incorrect)(?=$|[^\p{L}])/iu.test(q.text);
+const reasoningLevel = value => /^(?:high|Высокий)$/iu.test(value || '') ? 2
+  : /^(?:medium|Средний)$/iu.test(value || '') ? 1 : 0;
 
 export function selectContext(text, questions, limit = 48000) {
   if (text.length <= limit) return text;
@@ -242,6 +244,7 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
   if (blocked.size) throw recoveryError || new Error('UNKNOWN_MODEL_OUTCOME');
   const identity = q => `${q.quizId}:${q.attemptId}:${q.nativeSlot || q.slot}`;
   const questionIds = new Set(unresolved.map(identity));
+  const recovered = new Map();
   // Regrouping or changing reasoning must not bypass a previously pending request.
   const journals = await readdir(journalDir).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
   for (const name of journals.filter(modelJournal)) {
@@ -262,14 +265,16 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
           try { if (!isExcludedAnswer(q, answer.answer)) decisions.set(q.slot, { ...answer, cached: true,
             ...(answer.reasoning || saved.result.reasoning ? { reasoning: answer.reasoning || saved.result.reasoning } : {}) }); }
           catch { /* a malformed old result never becomes a reusable answer */ }
-        } else if (binding && saved.result.recovered && !decisions.has(q.slot)) {
+        } else if (binding && saved.result.recovered && (!decisions.has(q.slot)
+          || (decisions.get(q.slot).status === 'needs_review' && reasoningLevel(saved.result.reasoning) > reasoningLevel(decisions.get(q.slot).reasoning)))) {
           const raw = saved.result.answers.find(a => a.slot === q.slot);
           const review = raw && reviewEvidenceSupport(reviewConfidence(raw), q);
-          // A completed uncertain reply is a result, not permission to resend the
-          // same questions under a different packet hash after regrouping.
-          if (review) decisions.set(q.slot, { ...review, status: 'needs_review', cached: true,
-            reviewReason: review.reviewReason || (q.type === 'multiple' ? 'multiple_completeness' : negativeQuestion(q) ? 'negative_question' : 'evidence_not_supportive'),
-            reasoning: review.reasoning || saved.result.reasoning });
+          if (review) {
+            decisions.set(q.slot, { ...review, status: 'needs_review', cached: true,
+              reviewReason: review.reviewReason || (q.type === 'multiple' ? 'multiple_completeness' : negativeQuestion(q) ? 'negative_question' : 'evidence_not_supportive'),
+              reasoning: review.reasoning || saved.result.reasoning });
+            recovered.set(q.slot, { name, result: saved.result });
+          }
         }
       }
     }
@@ -278,6 +283,36 @@ export async function solveTest(questions, context, { journalDir, jev = requestJ
     provider: 'Web', reasoning, questions: batch.length, tests: new Set(batch.map(q => q.quizId)).size, ...detail });
   const bindings = batch => batch.map(q => ({ slot: q.slot, fingerprint: questionFingerprint(q, context) }));
   await notify();
+  // Resume only the missing reasoning levels in the verified original chain.
+  // High uncertainty and legacy results without a verified chain stay unresolved.
+  for (const origin of new Set([...recovered.values()].map(item => item.name))) {
+    const saved = [...recovered.values()].find(item => item.name === origin).result;
+    const chain = saved.continuation;
+    if (!web || reasoningLevel(saved.reasoning) === 2 || !chain || chain.requestId + '.json' !== origin
+      || !Array.isArray(chain.parentRequestId) || ![...chain.parentRequestId, chain.requestId].every(id => /^[a-f0-9]{64}$/u.test(id))
+      || new Set([...chain.parentRequestId, chain.requestId]).size !== chain.parentRequestId.length + 1
+      || !/^https:\/\/chatgpt\.com\/c\/[a-zA-Z0-9-]+$/u.test(saved.conversationUrl || '')) continue;
+    let review = unresolved.filter(q => recovered.get(q.slot)?.name === origin && decisions.get(q.slot)?.status === 'needs_review');
+    const parents = [...chain.parentRequestId, chain.requestId];
+    for (const reasoning of ['medium', 'high'].slice(reasoningLevel(saved.reasoning))) {
+      if (!review.length) break;
+      check();
+      const batch = review.map(q => ({ ...q, previousUnverifiedAnswer: decisions.get(q.slot).answer,
+        reviewReason: decisions.get(q.slot).reviewReason, previousReviewExplanation: decisions.get(q.slot).reviewExplanation,
+        previousEvidence: decisions.get(q.slot).evidence, previousRejectedAnswer: decisions.get(q.slot).rejectedAnswer }));
+      const id = digest(['web-recovered-escalation-v1', origin, reasoning, batch.map(q => [q.slot, q.previousUnverifiedAnswer,
+        q.reviewReason, q.previousReviewExplanation, q.previousEvidence, q.previousRejectedAnswer])]);
+      await progress('solving', { provider: 'Web', reasoning: reasoning === 'medium' ? 'Medium' : 'High', questions: batch.length,
+        tests: new Set(batch.map(q => q.quizId)).size });
+      const answers = await web(batch, packetContext(context, batch, 80000), { requestId: id, journalPath: join(journalDir, id + '.json'),
+        reasoning, continueUrl: saved.conversationUrl, parentRequestId: [...parents], questionIds: batch.map(identity), bindings: bindings(batch),
+        onWait: webWait(batch, reasoning === 'medium' ? 'Medium' : 'High') });
+      parents.push(id);
+      for (const answer of answers) decisions.set(answer.slot, reviewEvidenceSupport(reviewConfidence(answer), batch.find(q => q.slot === answer.slot)));
+      await notify();
+      review = review.filter(q => decisions.get(q.slot)?.status === 'needs_review');
+    }
+  }
   const eligible = unresolved.filter(q => !decisions.has(q.slot) && ['choice', 'multiple', 'matching'].includes(q.type)
     && (context.documents?.[q.contextId] || context).status === 'ready'
     && (context.documents?.[q.contextId] || context).text.length >= 100).filter(q => {

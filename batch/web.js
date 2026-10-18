@@ -474,7 +474,8 @@ export async function recoverWeb(journalPath, { readMessages, verifySemantics = 
       || answers.some(a => !slots.includes(a.slot))) reject();
   answers = await verifySemantics(answers, questions, journalPath);
   const result = { answers, conversationUrl: saved.conversationUrl, reasoning: saved.request?.reasoning || ['Instant', 'Medium', 'High'][parents.length],
-    sourcePolicy: 9, recovered: true, recoveryQuestions: packet.questions };
+    sourcePolicy: 9, recovered: true, recoveryQuestions: packet.questions,
+    continuation: { requestId: saved.requestId, parentRequestId: parents } };
   if (await readFile(journalPath, 'utf8') !== original) throw new Error('GPT_WEB_RECOVERY_JOURNAL_CHANGED');
   await writeFile(journalPath + '.tmp', JSON.stringify({ state: 'complete', bindings: saved.bindings, result }), { mode: 0o600 });
   await rename(journalPath + '.tmp', journalPath);
